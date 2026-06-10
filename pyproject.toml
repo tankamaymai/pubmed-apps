@@ -1,0 +1,10 @@
+[project]
+name = "shoulder-digest"
+version = "0.1.0"
+description = "Local PubMed shoulder literature digest with Codex/ImageGen and LINE delivery"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
