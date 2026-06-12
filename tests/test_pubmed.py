@@ -1,7 +1,18 @@
 import unittest
 
 from shoulder_digest.models import Paper
-from shoulder_digest.pubmed import is_shoulder_focused, parse_pubmed_xml, pubmed_date_range, select_top_papers
+from shoulder_digest.pubmed import (
+    build_pubmed_search_query,
+    is_clinically_oriented,
+    is_shoulder_focused,
+    lookback_search_steps,
+    parse_pubmed_xml,
+    pubmed_date_range,
+    score_paper,
+    search_retmax_for_lookback,
+    search_top_papers,
+    select_top_papers,
+)
 
 
 PUBMED_XML = """<?xml version="1.0" ?>
@@ -74,6 +85,88 @@ class PubMedTests(unittest.TestCase):
     def test_pubmed_date_range_uses_lookback_days(self):
         self.assertEqual(pubmed_date_range("2026-06-09", lookback_days=1), ("2026/06/09", "2026/06/09"))
         self.assertEqual(pubmed_date_range("2026-06-09", lookback_days=3), ("2026/06/07", "2026/06/09"))
+
+    def test_build_pubmed_search_query_prefers_clinical_human_studies(self):
+        query = build_pubmed_search_query()
+        self.assertIn("humans[MeSH Terms]", query)
+        self.assertIn("Randomized Controlled Trial", query)
+        self.assertIn("rehabilitation[Title/Abstract]", query)
+        self.assertIn("exoskeleton[Title/Abstract]", query)
+
+    def test_is_clinically_oriented_rejects_non_clinical_and_accepts_rct(self):
+        rct = Paper(
+            pmid="1",
+            title="Randomized trial of rotator cuff rehabilitation outcomes in patients",
+            abstract="Patients were randomized to two rehabilitation protocols with clinical outcomes. " * 3,
+            article_types=["Randomized Controlled Trial"],
+            topics=["rotator cuff", "rehabilitation"],
+        )
+        score_paper(rct)
+        self.assertTrue(is_clinically_oriented(rct))
+
+        biomechanics = Paper(
+            pmid="2",
+            title="Finite element analysis of rotator cuff repair",
+            abstract="A cadaveric biomechanical analysis was performed in vitro. " * 3,
+            article_types=["Journal Article"],
+            topics=["rotator cuff"],
+        )
+        score_paper(biomechanics)
+        self.assertFalse(is_clinically_oriented(biomechanics))
+
+        exoskeleton = Paper(
+            pmid="3",
+            title="Influence of a passive shoulder exoskeleton on drilling performance in women",
+            abstract="Industrial workers performed drilling tasks while wearing an exoskeleton. " * 3,
+            article_types=["Journal Article"],
+            topics=["shoulder"],
+        )
+        score_paper(exoskeleton)
+        self.assertFalse(is_clinically_oriented(exoskeleton))
+
+    def test_lookback_search_steps_expands_when_needed(self):
+        self.assertEqual(lookback_search_steps(30, 365), [30, 90, 365])
+        self.assertEqual(lookback_search_steps(7, 30), [7, 30])
+
+    def test_search_retmax_for_lookback_scales_with_window(self):
+        self.assertEqual(search_retmax_for_lookback(30), 80)
+        self.assertEqual(search_retmax_for_lookback(120), 200)
+
+    def test_search_top_papers_expands_lookback_until_match(self):
+        class ExpandingPubMed:
+            def __init__(self):
+                self.calls: list[int] = []
+
+            def search_recent(self, run_date, retmax=80, lookback_days=1):
+                self.calls.append(lookback_days)
+                return ["1"] if lookback_days >= 90 else []
+
+            def fetch_details(self, pmids):
+                if not pmids:
+                    return []
+                return [
+                    Paper(
+                        pmid="1",
+                        title="Rotator cuff repair outcomes in patients",
+                        abstract="Patients underwent shoulder surgery with rehabilitation outcomes. " * 4,
+                        article_types=["Randomized Controlled Trial"],
+                        topics=["rotator cuff", "shoulder"],
+                        relevance_score=10,
+                    )
+                ]
+
+        client = ExpandingPubMed()
+        selected, lookback_used, pmids = search_top_papers(
+            client,
+            "2026-06-09",
+            set(),
+            limit=1,
+            lookback_days=30,
+            max_lookback_days=365,
+        )
+        self.assertEqual([paper.pmid for paper in selected], ["1"])
+        self.assertEqual(lookback_used, 90)
+        self.assertEqual(client.calls, [30, 90])
 
 
 if __name__ == "__main__":

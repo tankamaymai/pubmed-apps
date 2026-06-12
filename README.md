@@ -31,6 +31,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_task.ps1 -Tim
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_task.ps1
 ```
 
+PCログオン時に `serve --schedule` と ngrok を自動起動する場合:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_startup.ps1
+```
+
+解除:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_startup.ps1
+```
+
+ログは `.pubmed_digest/logs/serve.log` と `.pubmed_digest/logs/ngrok.log` に出力されます。
+
 ## Required Setup
 
 1. `.env.example` を参考に環境変数を設定します。まず `python -m shoulder_digest init-env` を実行すると、スタンドアロンCodexパスと作成済みNotion DB ID入りの `.env` が作られます。
@@ -49,8 +63,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_task.ps1
 - LINEの画像メッセージはLINE側から取得できるHTTPS画像URLが必要です。実送信には `SHOULDER_DIGEST_PUBLIC_BASE_URL` をngrok/Cloudflare Tunnel等の公開HTTPS URLに設定してください。
 - `SHOULDER_DIGEST_MOCK_AI=1` の場合、CodexとImageGenを呼ばずにダミー要約とダミー画像パスで処理します。PubMed/LINE/Notionのロジック確認用です。
 - `NCBI_API_KEY` は任意です。未設定でもPubMed E-utilitiesを使いますが、NCBIの低レート制限に合わせた運用になります。
-- `SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS` はPubMed検索の登録日lookbackです。既定は3日で、同じPMIDは重複配信しないため、朝の登録遅延を吸収しやすくしています。
-- `SHOULDER_DIGEST_AUTO_SEND=1` にすると、日次ジョブ完了後に承認待ちを挟まずLINEへ自動送信します。既定は `0` で、Web UIの承認ボタンから送信します。
+- `SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS` はPubMed検索の最初の登録日lookbackです。既定は30日です。
+- `SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS` は候補が見つからない場合にさらに遡る最大日数です。既定は365日で、30日→90日→365日の順に広げて検索します。
+- 既にLINE配信済みのPMIDは重複配信しないため、過去分から未配信の論文を優先して選びます。
+- `SHOULDER_DIGEST_AUTO_SEND=1` にすると、日次ジョブ完了後にLINEへ自動送信します。既定は `0` で、Web UI または CLI から手動送信します。
+- 同じ日付でも `run` / `approve-send`（または `send`）は何度でも実行できます。配信済み PMID は次回の選定から除外されます。
 - LINEの `groupId` は `.env` の `LINE_GROUP_ID` に直接設定するか、`POST /webhook/line` で受け取ったグループイベントからSQLiteへ保存できます。`/setup` はどちらも認識します。
 - `NOTION_API_BASE_URL` と `LINE_API_BASE_URL` はテスト用の高度設定です。本番運用では既定の公式API URLを使います。
 - `python -m shoulder_digest doctor` は、Codex CLIが実行可能か、Codex schemaが生成済みか、LINE画像配信用URLがあるか、Notion DB schemaが期待通りかを確認します。

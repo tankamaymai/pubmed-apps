@@ -10,7 +10,8 @@ from shoulder_digest.server import render_setup
 
 
 class FakePubMed:
-    def search_recent(self, run_date, lookback_days=1):
+    def search_recent(self, run_date, retmax=80, lookback_days=1):
+        self.last_lookback = lookback_days
         return ["1", "2", "3"]
 
     def fetch_details(self, pmids):
@@ -20,11 +21,12 @@ class FakePubMed:
                 Paper(
                     pmid=pmid,
                     title=f"Rotator cuff shoulder study {pmid}",
-                    abstract="Rotator cuff shoulder randomized trial rehabilitation outcomes. " * 4,
+                    abstract="Patients with rotator cuff tears were randomized in a rehabilitation trial with clinical outcomes. " * 4,
                     journal="J Shoulder",
                     publication_date="2026-06-08",
                     pubmed_url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                    topics=["rotator cuff", "shoulder"],
+                    article_types=["Randomized Controlled Trial"],
+                    topics=["rotator cuff", "shoulder", "rehabilitation"],
                     relevance_score=10,
                     evidence_type="Randomized Controlled Trial",
                 )
@@ -50,7 +52,7 @@ class AppFlowTests(unittest.TestCase):
             result = app.run_daily("2026-06-08", dry_run=True)
             self.assertEqual(result["status"], "ready_for_approval")
             run = app.get_run("2026-06-08")
-            self.assertEqual(len(run["papers"]), 3)
+            self.assertEqual(len(run["papers"]), 1)
 
             app.storage.set_setting("line_group_id", "C123")
             send = app.approve_send("2026-06-08", dry_run=True)
@@ -79,6 +81,43 @@ class AppFlowTests(unittest.TestCase):
             self.assertEqual(result["status"], "delivered")
             self.assertEqual(len(fake_line.calls), 1)
             self.assertEqual(fake_line.calls[0][0], "C123")
+
+    def test_rerun_after_delivered_picks_next_paper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(db_path=Path(tmp) / "digest.sqlite3", mock_ai=True)
+            app = ShoulderDigestApp(settings)
+            app.pubmed = FakePubMed()
+            app.run_daily("2026-06-08", dry_run=True)
+            app.storage.upsert_run("2026-06-08", "delivered", True)
+            result = app.run_daily("2026-06-08", dry_run=True)
+            self.assertEqual(result["status"], "ready_for_approval")
+            run = app.get_run("2026-06-08")
+            self.assertNotEqual(run["papers"][0]["pmid"], "1")
+
+    def test_resend_after_delivered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(
+                db_path=Path(tmp) / "digest.sqlite3",
+                mock_ai=True,
+                line_group_id="C123",
+                line_channel_access_token="token",
+                line_channel_secret="secret",
+                public_base_url="https://example.com",
+            )
+            app = ShoulderDigestApp(settings)
+            app.pubmed = FakePubMed()
+            fake_line = FakeLine()
+            app.line = fake_line
+            app.run_daily("2026-06-08", dry_run=True)
+            with app.storage.session() as conn:
+                conn.execute(
+                    "UPDATE runs SET image_url = ? WHERE run_date = ?",
+                    ("https://example.com/test.png", "2026-06-08"),
+                )
+            app.storage.upsert_run("2026-06-08", "delivered", True)
+            result = app.approve_send("2026-06-08", dry_run=False)
+            self.assertEqual(result["status"], "sent")
+            self.assertEqual(len(fake_line.calls), 1)
 
     def test_render_setup_contains_status_rows(self):
         html = render_setup(

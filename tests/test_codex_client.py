@@ -5,6 +5,7 @@ from shoulder_digest.codex_client import (
     CodexAppServerClient,
     _dedupe_text,
     _extract_agent_text,
+    _extract_image_saved_path,
     _find_thread_id,
     _server_request_response,
 )
@@ -28,6 +29,11 @@ class CodexClientTests(unittest.TestCase):
         self.assertNotIn("sandbox", params)
         self.assertEqual(params["model"], "gpt-test")
 
+    def test_turn_start_params_allow_network_for_image_generation(self):
+        client = CodexAppServerClient(cwd=Path("C:/work"))
+        params = client._turn_start_params("thread_1", "draw", allow_network=True)
+        self.assertEqual(params["sandboxPolicy"], {"type": "readOnly", "networkAccess": True})
+
     def test_thread_start_params_are_read_only_and_ephemeral(self):
         client = CodexAppServerClient(cwd=Path("C:/work"))
         params = client._thread_start_params()
@@ -44,7 +50,25 @@ class CodexClientTests(unittest.TestCase):
         self.assertEqual(_server_request_response("execCommandApproval"), {"decision": "denied"})
         self.assertEqual(_server_request_response("mcpServer/elicitation/request")["action"], "decline")
         self.assertEqual(_server_request_response("item/tool/requestUserInput"), {"answers": {}})
+        self.assertEqual(
+            _server_request_response("item/permissions/requestApproval", allow_network=True)["permissions"]["network"],
+            {"enabled": True},
+        )
         self.assertIsNone(_server_request_response("account/chatgptAuthTokens/refresh"))
+
+    def test_extract_image_saved_path(self):
+        payload = {
+            "item": {
+                "type": "imageGeneration",
+                "savedPath": "C:/Users/test/.codex/generated_images/sample.png",
+                "status": "completed",
+            }
+        }
+        self.assertEqual(
+            _extract_image_saved_path(payload),
+            "C:/Users/test/.codex/generated_images/sample.png",
+        )
+        self.assertEqual(_extract_image_saved_path({"item": {"type": "agentMessage", "text": "x"}}), "")
 
     def test_extract_agent_text_ignores_user_messages(self):
         user = {"item": {"type": "userMessage", "content": [{"type": "text", "text": "prompt"}]}}

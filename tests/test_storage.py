@@ -7,7 +7,7 @@ from shoulder_digest.storage import Storage
 
 
 class StorageTests(unittest.TestCase):
-    def test_known_pmids_can_exclude_current_run(self):
+    def test_known_pmids_only_counts_delivered_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             storage = Storage(Path(tmp) / "digest.sqlite3")
             storage.upsert_run("2026-06-08", "running", True)
@@ -15,8 +15,11 @@ class StorageTests(unittest.TestCase):
                 "2026-06-08",
                 [Paper(pmid="123", title="Shoulder paper", abstract="A" * 100)],
             )
+            self.assertNotIn("123", storage.known_pmids())
+
+            storage.upsert_run("2026-06-08", "delivered", True)
+            storage.mark_pmids_delivered(["123"])
             self.assertIn("123", storage.known_pmids())
-            self.assertNotIn("123", storage.known_pmids(exclude_run_date="2026-06-08"))
 
 
 if __name__ == "__main__":

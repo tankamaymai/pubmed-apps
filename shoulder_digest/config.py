@@ -19,8 +19,9 @@ class Settings:
     db_path: Path = Path(".pubmed_digest/digest.sqlite3")
     daily_time: str = "07:00"
     public_base_url: str = ""
-    top_paper_count: int = 3
-    pubmed_lookback_days: int = 3
+    top_paper_count: int = 1
+    pubmed_lookback_days: int = 30
+    pubmed_max_lookback_days: int = 365
     auto_send: bool = False
 
     ncbi_api_key: str = ""
@@ -30,6 +31,9 @@ class Settings:
     codex_bin: str = "codex"
     codex_model: str = ""
     codex_generated_images_dir: Path = Path.home() / ".codex" / "generated_images"
+    codex_turn_timeout_seconds: int = 600
+    codex_image_turn_timeout_seconds: int = 1800
+    codex_image_wait_seconds: int = 120
     mock_ai: bool = False
 
     notion_token: str = ""
@@ -41,6 +45,9 @@ class Settings:
     line_channel_secret: str = ""
     line_group_id: str = ""
     line_api_base_url: str = "https://api.line.me"
+
+    obsidian_vault: Path = Path("")
+    obsidian_notes_dir: str = "PubMed肩関節"
 
     def media_dir(self) -> Path:
         return self.db_path.parent / "images"
@@ -54,8 +61,12 @@ class Settings:
             db_path=Path(os.environ.get("SHOULDER_DIGEST_DB", ".pubmed_digest/digest.sqlite3")),
             daily_time=os.environ.get("SHOULDER_DIGEST_DAILY_TIME", "07:00"),
             public_base_url=os.environ.get("SHOULDER_DIGEST_PUBLIC_BASE_URL", "").rstrip("/"),
-            top_paper_count=int(os.environ.get("SHOULDER_DIGEST_TOP_PAPER_COUNT", "3")),
-            pubmed_lookback_days=max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS", "3"))),
+            top_paper_count=max(1, int(os.environ.get("SHOULDER_DIGEST_TOP_PAPER_COUNT", "1"))),
+            pubmed_lookback_days=(lookback := max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS", "30")))),
+            pubmed_max_lookback_days=max(
+                lookback,
+                max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS", "365"))),
+            ),
             auto_send=_bool_env("SHOULDER_DIGEST_AUTO_SEND"),
             ncbi_api_key=os.environ.get("NCBI_API_KEY", ""),
             ncbi_email=os.environ.get("NCBI_EMAIL", ""),
@@ -63,6 +74,9 @@ class Settings:
             codex_bin=os.environ.get("CODEX_BIN") or default_codex_bin(),
             codex_model=os.environ.get("CODEX_MODEL", ""),
             codex_generated_images_dir=Path(generated) if generated else Path.home() / ".codex" / "generated_images",
+            codex_turn_timeout_seconds=max(60, int(os.environ.get("CODEX_TURN_TIMEOUT_SECONDS", "600"))),
+            codex_image_turn_timeout_seconds=max(60, int(os.environ.get("CODEX_IMAGE_TURN_TIMEOUT_SECONDS", "1800"))),
+            codex_image_wait_seconds=max(10, int(os.environ.get("CODEX_IMAGE_WAIT_SECONDS", "120"))),
             mock_ai=_bool_env("SHOULDER_DIGEST_MOCK_AI"),
             notion_token=os.environ.get("NOTION_TOKEN", ""),
             notion_database_id=os.environ.get("NOTION_DATABASE_ID", ""),
@@ -72,6 +86,8 @@ class Settings:
             line_channel_secret=os.environ.get("LINE_CHANNEL_SECRET", ""),
             line_group_id=os.environ.get("LINE_GROUP_ID", ""),
             line_api_base_url=os.environ.get("LINE_API_BASE_URL", "https://api.line.me").rstrip("/"),
+            obsidian_vault=Path(os.environ.get("OBSIDIAN_VAULT", "")),
+            obsidian_notes_dir=os.environ.get("OBSIDIAN_NOTES_DIR", "PubMed肩関節"),
         )
 
 

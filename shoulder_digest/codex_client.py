@@ -24,6 +24,7 @@ class CodexUnavailableError(CodexError):
 class CodexTurnResult:
     text: str
     raw_messages: list[dict[str, Any]]
+    saved_image_path: str = ""
 
 
 CODEX_SAFETY_INSTRUCTIONS = (
@@ -40,19 +41,31 @@ class CodexAppServerClient:
         codex_bin: str = "codex",
         model: str = "",
         cwd: Path | None = None,
-        timeout_seconds: int = 600,
+        turn_timeout_seconds: int = 600,
+        image_turn_timeout_seconds: int = 1800,
     ):
         self.codex_bin = codex_bin
         self.model = model
         self.cwd = cwd or Path.cwd()
-        self.timeout_seconds = timeout_seconds
+        self.turn_timeout_seconds = turn_timeout_seconds
+        self.image_turn_timeout_seconds = image_turn_timeout_seconds
 
     def available(self) -> bool:
         return shutil.which(self.codex_bin) is not None or Path(self.codex_bin).exists()
 
-    def run_turn(self, prompt: str) -> CodexTurnResult:
+    def run_turn(
+        self,
+        prompt: str,
+        *,
+        timeout_seconds: int | None = None,
+        allow_network: bool = False,
+        expect_image: bool = False,
+    ) -> CodexTurnResult:
         if not self.available():
             raise CodexUnavailableError(f"Codex CLI not found: {self.codex_bin}")
+        effective_timeout = timeout_seconds
+        if effective_timeout is None:
+            effective_timeout = self.image_turn_timeout_seconds if expect_image else self.turn_timeout_seconds
         proc = subprocess.Popen(
             [self.codex_bin, "app-server", "--listen", "stdio://"],
             cwd=str(self.cwd),
@@ -101,10 +114,11 @@ class CodexAppServerClient:
         send({"method": "initialized", "params": {}})
         thread_id_request = request("thread/start", self._thread_start_params())
 
-        deadline = time.monotonic() + self.timeout_seconds
+        deadline = time.monotonic() + effective_timeout
         thread_id = ""
         turn_started = False
         turn_completed = False
+        saved_image_path = ""
 
         while time.monotonic() < deadline:
             try:
@@ -132,13 +146,16 @@ class CodexAppServerClient:
                         raise CodexError("thread/start did not return a thread id")
                     request(
                         "turn/start",
-                        self._turn_start_params(thread_id, prompt),
+                        self._turn_start_params(thread_id, prompt, allow_network=allow_network),
                     )
                     turn_started = True
                 continue
 
             if message_id is not None and message.get("method"):
-                response = _server_request_response(message.get("method", ""))
+                response = _server_request_response(
+                    message.get("method", ""),
+                    allow_network=allow_network,
+                )
                 if response is None:
                     send(
                         {
@@ -163,18 +180,32 @@ class CodexAppServerClient:
                 extracted = _extract_agent_text(params)
                 if extracted:
                     completed_agent_texts.append(extracted)
+                image_path = _extract_image_saved_path(params)
+                if image_path:
+                    saved_image_path = image_path
             elif method == "turn/completed":
                 turn_completed = True
-                break
+                if not expect_image or saved_image_path:
+                    break
 
         _terminate(proc)
         if not turn_started:
             raise CodexError("Codex turn did not start")
-        if not turn_completed:
+        if expect_image:
+            if not saved_image_path and not turn_completed:
+                stderr_tail = "\n".join(stderr_lines[-20:])
+                raise CodexError(
+                    f"Codex image turn timed out before image generation completed. {stderr_tail}".strip()
+                )
+        elif not turn_completed:
             stderr_tail = "\n".join(stderr_lines[-20:])
             raise CodexError(f"Codex turn timed out or closed early. {stderr_tail}".strip())
         final_text = "\n".join(completed_agent_texts).strip() if completed_agent_texts else "".join(text_parts).strip()
-        return CodexTurnResult(text=_dedupe_text(final_text), raw_messages=messages)
+        return CodexTurnResult(
+            text=_dedupe_text(final_text),
+            raw_messages=messages,
+            saved_image_path=saved_image_path,
+        )
 
     def _thread_start_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -188,13 +219,13 @@ class CodexAppServerClient:
             params["model"] = self.model
         return params
 
-    def _turn_start_params(self, thread_id: str, prompt: str) -> dict[str, Any]:
+    def _turn_start_params(self, thread_id: str, prompt: str, *, allow_network: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}],
             "cwd": str(self.cwd),
             "approvalPolicy": "on-request",
-            "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+            "sandboxPolicy": {"type": "readOnly", "networkAccess": allow_network},
         }
         if self.model:
             params["model"] = self.model
@@ -221,7 +252,7 @@ def _terminate(proc: subprocess.Popen[str]) -> None:
         proc.kill()
 
 
-def _server_request_response(method: str) -> dict[str, Any] | None:
+def _server_request_response(method: str, *, allow_network: bool = False) -> dict[str, Any] | None:
     if method in {"item/commandExecution/requestApproval"}:
         return {"decision": "decline"}
     if method in {"item/fileChange/requestApproval"}:
@@ -229,10 +260,11 @@ def _server_request_response(method: str) -> dict[str, Any] | None:
     if method in {"execCommandApproval", "applyPatchApproval"}:
         return {"decision": "denied"}
     if method == "item/permissions/requestApproval":
+        network_permission = {"enabled": True} if allow_network else None
         return {
-            "permissions": {"fileSystem": None, "network": None},
+            "permissions": {"fileSystem": None, "network": network_permission},
             "scope": "turn",
-            "strictAutoReview": True,
+            "strictAutoReview": not allow_network,
         }
     if method == "mcpServer/elicitation/request":
         return {"action": "decline", "content": None}
@@ -271,6 +303,18 @@ def _extract_agent_text(params: Any) -> str:
         return ""
     text = item.get("text")
     return text if isinstance(text, str) else ""
+
+
+def _extract_image_saved_path(params: Any) -> str:
+    if not isinstance(params, dict):
+        return ""
+    item = params.get("item")
+    if not isinstance(item, dict) or item.get("type") != "imageGeneration":
+        return ""
+    saved_path = item.get("savedPath")
+    if isinstance(saved_path, str) and saved_path.strip():
+        return saved_path.strip()
+    return ""
 
 
 def _dedupe_text(text: str) -> str:

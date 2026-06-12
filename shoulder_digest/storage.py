@@ -72,6 +72,20 @@ class Storage:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS delivered_pmids (
+                    pmid TEXT PRIMARY KEY,
+                    delivered_at TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at)
+                SELECT p.pmid, r.updated_at
+                FROM papers p
+                JOIN runs r ON r.run_date = p.run_date
+                WHERE p.status = 'delivered' OR r.status = 'delivered'
                 """
             )
 
@@ -88,16 +102,20 @@ class Storage:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
 
-    def known_pmids(self, exclude_run_date: str = "") -> set[str]:
+    def known_pmids(self) -> set[str]:
         with self.session() as conn:
-            if exclude_run_date:
-                rows = conn.execute(
-                    "SELECT DISTINCT pmid FROM papers WHERE run_date != ?",
-                    (exclude_run_date,),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT DISTINCT pmid FROM papers").fetchall()
+            rows = conn.execute("SELECT pmid FROM delivered_pmids").fetchall()
         return {row["pmid"] for row in rows}
+
+    def mark_pmids_delivered(self, pmids: list[str]) -> None:
+        now = utc_now_iso()
+        with self.session() as conn:
+            for pmid in pmids:
+                if pmid:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at) VALUES(?, ?)",
+                        (pmid, now),
+                    )
 
     def upsert_run(self, run_date: str, status: str, dry_run: bool, error: str = "") -> None:
         now = utc_now_iso()
@@ -114,6 +132,10 @@ class Storage:
                 """,
                 (run_date, status, int(dry_run), now, now, error),
             )
+
+    def clear_run_papers(self, run_date: str) -> None:
+        with self.session() as conn:
+            conn.execute("DELETE FROM papers WHERE run_date = ?", (run_date,))
 
     def save_candidates(self, run_date: str, papers: list[Paper]) -> None:
         with self.session() as conn:
@@ -210,6 +232,7 @@ class Storage:
 
     def save_line_payload(self, run_date: str, payload: dict[str, Any], delivered: bool) -> None:
         status = "delivered" if delivered else "ready_for_approval"
+        delivered_pmids: list[str] = []
         with self.session() as conn:
             conn.execute(
                 "UPDATE runs SET line_payload = ?, status = ?, updated_at = ? WHERE run_date = ?",
@@ -217,6 +240,12 @@ class Storage:
             )
             if delivered:
                 conn.execute("UPDATE papers SET status = ? WHERE run_date = ?", ("delivered", run_date))
+                delivered_pmids = [
+                    row["pmid"]
+                    for row in conn.execute("SELECT pmid FROM papers WHERE run_date = ?", (run_date,)).fetchall()
+                ]
+        if delivered:
+            self.mark_pmids_delivered(delivered_pmids)
 
     def mark_error(self, run_date: str, error: str) -> None:
         with self.session() as conn:

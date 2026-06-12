@@ -12,7 +12,8 @@ from .image_watcher import ImageWatcher
 from .line_client import LineClient, build_line_messages
 from .models import DigestResult
 from .notion_client import NotionClient
-from .pubmed import PubMedClient, default_run_date, select_top_papers
+from .obsidian_client import ObsidianVaultWriter
+from .pubmed import PubMedClient, default_run_date, search_top_papers
 from .storage import Storage
 
 
@@ -21,7 +22,13 @@ class ShoulderDigestApp:
         self.settings = settings
         self.storage = Storage(settings.db_path)
         self.pubmed = PubMedClient(settings.ncbi_api_key, settings.ncbi_email, settings.ncbi_tool)
-        self.codex = CodexAppServerClient(settings.codex_bin, settings.codex_model, Path.cwd())
+        self.codex = CodexAppServerClient(
+            settings.codex_bin,
+            settings.codex_model,
+            Path.cwd(),
+            turn_timeout_seconds=settings.codex_turn_timeout_seconds,
+            image_turn_timeout_seconds=settings.codex_image_turn_timeout_seconds,
+        )
         self.watcher = ImageWatcher(settings.codex_generated_images_dir)
         self.line = LineClient(
             settings.line_channel_access_token,
@@ -34,25 +41,25 @@ class ShoulderDigestApp:
             settings.notion_version,
             settings.notion_api_base_url,
         )
+        self.obsidian = ObsidianVaultWriter(settings.obsidian_vault, settings.obsidian_notes_dir)
 
     def run_daily(self, run_date: str | None = None, dry_run: bool = False) -> dict[str, Any]:
         run_date = run_date or default_run_date()
-        existing = self.storage.get_run(run_date)
-        if existing and existing.get("status") == "delivered" and not dry_run:
-            return {"runDate": run_date, "status": "already_delivered", "run": existing}
         self.storage.upsert_run(run_date, "running", dry_run)
         try:
-            pmids = self.pubmed.search_recent(run_date, lookback_days=self.settings.pubmed_lookback_days)
-            papers = self.pubmed.fetch_details(pmids)
-            selected = select_top_papers(
-                papers,
-                self.storage.known_pmids(exclude_run_date=run_date),
+            selected, lookback_used, pmids = search_top_papers(
+                self.pubmed,
+                run_date,
+                self.storage.known_pmids(),
                 limit=self.settings.top_paper_count,
+                lookback_days=self.settings.pubmed_lookback_days,
+                max_lookback_days=self.settings.pubmed_max_lookback_days,
             )
+            self.storage.clear_run_papers(run_date)
             self.storage.save_candidates(run_date, selected)
             if not selected:
                 self.storage.upsert_run(run_date, "no_candidates", dry_run)
-                return {"runDate": run_date, "status": "no_candidates", "pmids": pmids}
+                return {"runDate": run_date, "status": "no_candidates", "pmids": pmids, "lookbackDays": lookback_used}
 
             digest = summarize_with_codex(run_date, selected, self.codex, mock=self.settings.mock_ai)
             image_path = generate_image_with_codex(
@@ -60,6 +67,7 @@ class ShoulderDigestApp:
                 self.codex,
                 self.watcher,
                 mock=self.settings.mock_ai,
+                image_wait_seconds=self.settings.codex_image_wait_seconds,
             )
             if image_path:
                 stored_image = self._store_image_for_run(run_date, image_path)
@@ -70,7 +78,13 @@ class ShoulderDigestApp:
                 digest.image_url = ""
             self.storage.save_digest(digest)
             self._archive_to_notion(digest, selected, dry_run=dry_run)
-            response = {"runDate": run_date, "status": "ready_for_approval", "digest": digest.to_dict()}
+            self._archive_to_obsidian(digest, selected, dry_run=dry_run)
+            response = {
+                "runDate": run_date,
+                "status": "ready_for_approval",
+                "digest": digest.to_dict(),
+                "lookbackDays": lookback_used,
+            }
             if self.settings.auto_send and not dry_run:
                 response["lineDelivery"] = self.approve_send(run_date, dry_run=False)
                 response["status"] = "delivered"
@@ -83,8 +97,10 @@ class ShoulderDigestApp:
         run = self.storage.get_run(run_date)
         if not run:
             raise RuntimeError(f"Run not found: {run_date}")
-        if run.get("status") == "delivered" and not dry_run:
-            return {"status": "already_delivered", "runDate": run_date}
+        if run.get("status") not in {"ready_for_approval", "delivered"}:
+            raise RuntimeError(
+                f"Run {run_date} is not ready to send (status={run.get('status', 'unknown')}). Run the daily job first."
+            )
         group_id = self.settings.line_group_id or self.storage.get_setting("line_group_id")
         if not group_id:
             raise RuntimeError("LINE group ID is not configured. Add the bot to a group and receive a webhook first.")
@@ -104,6 +120,8 @@ class ShoulderDigestApp:
                 page_id = paper.get("notion_page_id")
                 if page_id:
                     self.notion.mark_delivered(page_id)
+        if not dry_run and self.obsidian.configured:
+            self.obsidian.mark_delivered(run_date, dry_run=False)
         return result
 
     def handle_line_webhook(self, body: bytes, signature: str) -> dict[str, Any]:
@@ -169,3 +187,30 @@ class ShoulderDigestApp:
             page_id = response.get("id") if isinstance(response, dict) else ""
             if page_id and not dry_run:
                 self.storage.mark_notion_page(digest.run_date, digest_paper.pmid, page_id)
+
+    def _archive_to_obsidian(self, digest: DigestResult, selected: list[Any], dry_run: bool) -> None:
+        if not self.obsidian.configured:
+            return
+        selected_by_pmid = {paper.pmid: paper for paper in selected}
+        papers: list[dict[str, Any]] = []
+        for digest_paper in digest.papers:
+            source = selected_by_pmid.get(digest_paper.pmid)
+            paper_dict = source.to_ai_dict() if source else {"pmid": digest_paper.pmid, "title": digest_paper.title}
+            paper_dict.update(
+                {
+                    "japanese_summary": digest_paper.japanese_summary,
+                    "clinical_takeaway": digest_paper.clinical_takeaway,
+                    "topics": digest_paper.topics or paper_dict.get("topics", []),
+                    "evidence_type": digest_paper.evidence_type or paper_dict.get("evidence_type", ""),
+                }
+            )
+            papers.append(paper_dict)
+        self.obsidian.save_digest(
+            digest.run_date,
+            digest.digest_summary,
+            digest.image_prompt,
+            papers,
+            source_image_path=digest.image_path,
+            status="ready_for_approval",
+            dry_run=dry_run,
+        )

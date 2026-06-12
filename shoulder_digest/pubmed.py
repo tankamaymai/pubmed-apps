@@ -24,6 +24,44 @@ SHOULDER_QUERY = (
     '"shoulder rehabilitation"[Title/Abstract])'
 )
 
+CLINICAL_FILTER = (
+    '(humans[MeSH Terms] NOT (animals[MeSH Terms] NOT humans[MeSH Terms])) AND ('
+    '"Randomized Controlled Trial"[Publication Type] OR '
+    '"Clinical Trial"[Publication Type] OR '
+    '"Controlled Clinical Trial"[Publication Type] OR '
+    '"Multicenter Study"[Publication Type] OR '
+    '"Observational Study"[Publication Type] OR '
+    '"Systematic Review"[Publication Type] OR '
+    '"Meta-Analysis"[Publication Type] OR '
+    '"Practice Guideline"[Publication Type] OR '
+    '"Physical Therapy Modalities"[MeSH Terms] OR '
+    '"Rehabilitation"[MeSH Terms] OR '
+    '"Orthopedic Procedures"[MeSH Terms] OR '
+    '"Treatment Outcome"[MeSH Terms] OR '
+    '"Postoperative Care"[MeSH Terms] OR '
+    'rehabilitation[Title/Abstract] OR '
+    '"physical therapy"[Title/Abstract] OR '
+    '"shoulder surgery"[Title/Abstract] OR '
+    'postoperative[Title/Abstract] OR '
+    'patients[Title/Abstract] OR '
+    'hospital[Title/Abstract] OR '
+    'outpatient[Title/Abstract]'
+    ') AND NOT ('
+    'occupational[Title/Abstract] OR '
+    'ergonomics[Title/Abstract] OR '
+    'workplace[Title/Abstract] OR '
+    '"industrial workers"[Title/Abstract] OR '
+    'exoskeleton[Title/Abstract] OR '
+    'biomechanical[Title/Abstract] OR '
+    'biomechanics[Title/Abstract] OR '
+    'cadaveric[Title/Abstract] OR '
+    '"in vitro"[Title/Abstract] OR '
+    '"finite element"[Title/Abstract]'
+    ')'
+)
+
+SHOULDER_CLINICAL_QUERY = f"({SHOULDER_QUERY}) AND {CLINICAL_FILTER}"
+
 TOPIC_WEIGHTS = {
     "rotator cuff": 5,
     "supraspinatus": 3,
@@ -43,13 +81,90 @@ TOPIC_WEIGHTS = {
 }
 
 ARTICLE_TYPE_WEIGHTS = {
-    "Randomized Controlled Trial": 5,
-    "Clinical Trial": 4,
-    "Meta-Analysis": 5,
-    "Systematic Review": 5,
-    "Review": 2,
-    "Practice Guideline": 4,
+    "Randomized Controlled Trial": 8,
+    "Clinical Trial": 7,
+    "Meta-Analysis": 8,
+    "Systematic Review": 8,
+    "Practice Guideline": 7,
+    "Multicenter Study": 6,
+    "Observational Study": 5,
+    "Comparative Study": 5,
+    "Evaluation Study": 5,
+    "Controlled Clinical Trial": 7,
+    "Review": 3,
+    "Case Reports": -2,
 }
+
+LOW_EVIDENCE_ARTICLE_TYPES = {
+    "Letter",
+    "Editorial",
+    "Comment",
+    "News",
+    "Published Erratum",
+    "Retraction of Publication",
+}
+
+CLINICAL_TEXT_WEIGHTS = {
+    "randomized controlled trial": 4,
+    "randomised controlled trial": 4,
+    "prospective cohort": 3,
+    "retrospective cohort": 3,
+    "clinical outcomes": 3,
+    "functional outcomes": 3,
+    "patient-reported": 3,
+    "patients underwent": 3,
+    "rehabilitation protocol": 4,
+    "physical therapy": 4,
+    "postoperative": 3,
+    "surgical treatment": 3,
+    "conservative treatment": 3,
+    "outpatient": 2,
+    "hospital": 2,
+}
+
+NON_CLINICAL_TEXT_PENALTIES = {
+    "in vitro": 8,
+    "in vivo study": 6,
+    "animal model": 8,
+    "mouse model": 8,
+    "rat model": 8,
+    "cadaveric": 8,
+    "cadaver study": 8,
+    "finite element analysis": 8,
+    "biomechanical analysis": 6,
+    "biomechanics": 6,
+    "anatomic study": 6,
+    "anatomical study": 6,
+    "exoskeleton": 10,
+    "ergonomics": 10,
+    "occupational": 10,
+    "workplace": 8,
+    "industrial worker": 8,
+    "drilling performance": 10,
+}
+
+HEALTHCARE_PRACTICE_PATTERN = re.compile(
+    r"\b("
+    r"patient[s]?|"
+    r"hospital|"
+    r"outpatient|"
+    r"clinic|"
+    r"rehabilitation|"
+    r"physical therapy|"
+    r"surgery|"
+    r"surgical|"
+    r"arthroscopic|"
+    r"postoperative|"
+    r"conservative treatment|"
+    r"operative treatment|"
+    r"shoulder replacement|"
+    r"rotator cuff repair|"
+    r"shoulder instability|"
+    r"adhesive capsulitis|"
+    r"frozen shoulder"
+    r")\b",
+    re.IGNORECASE,
+)
 
 STRONG_SHOULDER_TERMS = {
     "rotator cuff",
@@ -72,11 +187,11 @@ class PubMedClient:
         self.email = email
         self.tool = tool
 
-    def search_recent(self, run_date: str, retmax: int = 50, lookback_days: int = 1) -> list[str]:
+    def search_recent(self, run_date: str, retmax: int = 80, lookback_days: int = 1) -> list[str]:
         mindate, maxdate = pubmed_date_range(run_date, lookback_days)
         params = {
             "db": "pubmed",
-            "term": SHOULDER_QUERY,
+            "term": build_pubmed_search_query(),
             "retmode": "json",
             "retmax": str(retmax),
             "sort": "pub+date",
@@ -119,6 +234,10 @@ class PubMedClient:
 
 def _format_pubmed_date(value: str) -> str:
     return datetime.strptime(value, "%Y-%m-%d").strftime("%Y/%m/%d")
+
+
+def build_pubmed_search_query() -> str:
+    return SHOULDER_CLINICAL_QUERY
 
 
 def pubmed_date_range(run_date: str, lookback_days: int = 1) -> tuple[str, str]:
@@ -235,12 +354,22 @@ def score_paper(paper: Paper) -> Paper:
             topics.append(topic)
             score += weight
     for article_type in paper.article_types:
+        if article_type in LOW_EVIDENCE_ARTICLE_TYPES:
+            score -= 8
         for key, weight in ARTICLE_TYPE_WEIGHTS.items():
             if key.lower() == article_type.lower():
                 score += weight
-                if not paper.evidence_type:
+                if not paper.evidence_type and weight > 0:
                     paper.evidence_type = key
+    for phrase, weight in CLINICAL_TEXT_WEIGHTS.items():
+        if phrase in haystack:
+            score += weight
+    for phrase, penalty in NON_CLINICAL_TEXT_PENALTIES.items():
+        if phrase in haystack:
+            score -= penalty
     if re.search(r"\b(randomi[sz]ed|trial|cohort|registry|meta-analysis|systematic review)\b", haystack):
+        score += 3
+    if re.search(r"\b(patient[s]?|rehabilitation|outcomes?|operative|arthroscopic)\b", haystack):
         score += 2
     if len(paper.abstract) >= 500:
         score += 1
@@ -251,7 +380,47 @@ def score_paper(paper: Paper) -> Paper:
     return paper
 
 
-def select_top_papers(papers: list[Paper], seen_pmids: set[str], limit: int = 3) -> list[Paper]:
+def lookback_search_steps(lookback_days: int, max_lookback_days: int) -> list[int]:
+    maximum = max(1, max_lookback_days)
+    initial = max(1, min(lookback_days, maximum))
+    steps: list[int] = []
+    for candidate in (initial, max(initial * 3, 90), maximum):
+        value = min(candidate, maximum)
+        if value not in steps:
+            steps.append(value)
+    return steps
+
+
+def search_retmax_for_lookback(lookback_days: int) -> int:
+    return min(200, max(80, lookback_days * 2))
+
+
+def search_top_papers(
+    client: PubMedClient,
+    run_date: str,
+    seen_pmids: set[str],
+    *,
+    limit: int = 1,
+    lookback_days: int = 30,
+    max_lookback_days: int = 365,
+) -> tuple[list[Paper], int, list[str]]:
+    last_pmids: list[str] = []
+    last_lookback = lookback_days
+    for lookback in lookback_search_steps(lookback_days, max_lookback_days):
+        last_lookback = lookback
+        last_pmids = client.search_recent(
+            run_date,
+            retmax=search_retmax_for_lookback(lookback),
+            lookback_days=lookback,
+        )
+        papers = client.fetch_details(last_pmids)
+        selected = select_top_papers(papers, seen_pmids, limit=limit)
+        if selected:
+            return selected, lookback, last_pmids
+    return [], last_lookback, last_pmids
+
+
+def select_top_papers(papers: list[Paper], seen_pmids: set[str], limit: int = 1) -> list[Paper]:
     candidates = [
         paper
         for paper in papers
@@ -259,10 +428,44 @@ def select_top_papers(papers: list[Paper], seen_pmids: set[str], limit: int = 3)
         and len(paper.abstract.strip()) >= 80
         and paper.relevance_score > 0
         and is_shoulder_focused(paper)
+        and is_clinically_oriented(paper)
     ]
     return sorted(candidates, key=lambda paper: (paper.relevance_score, paper.publication_date, paper.pmid), reverse=True)[
         :limit
     ]
+
+
+def is_clinically_oriented(paper: Paper) -> bool:
+    if any(article_type in LOW_EVIDENCE_ARTICLE_TYPES for article_type in paper.article_types):
+        return False
+    haystack = f"{paper.title}\n{paper.abstract}".lower()
+    if any(term in haystack for term in NON_CLINICAL_TEXT_PENALTIES):
+        return False
+    if not HEALTHCARE_PRACTICE_PATTERN.search(haystack):
+        return False
+
+    strong_clinical_types = {
+        "Randomized Controlled Trial",
+        "Clinical Trial",
+        "Controlled Clinical Trial",
+        "Meta-Analysis",
+        "Systematic Review",
+        "Practice Guideline",
+        "Multicenter Study",
+        "Observational Study",
+        "Comparative Study",
+        "Evaluation Study",
+    }
+    if any(article_type in strong_clinical_types for article_type in paper.article_types):
+        return True
+    if any(article_type.lower() == "case reports" for article_type in paper.article_types):
+        return paper.relevance_score >= 8
+    return bool(
+        re.search(
+            r"\b(patient[s]?|rehabilitation|physical therapy|outcomes?|randomi[sz]ed|prospective|retrospective|operative|arthroscopic|postoperative)\b",
+            haystack,
+        )
+    )
 
 
 def is_shoulder_focused(paper: Paper) -> bool:

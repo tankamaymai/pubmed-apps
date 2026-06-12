@@ -18,18 +18,20 @@ def build_summary_prompt(run_date: str, papers: list[Paper]) -> str:
     }
     return (
         "あなたは肩関節領域に詳しい医療者向け編集者です。\n"
-        "以下のPubMed論文JSONだけを根拠に、日本語の論文ダイジェストを作ってください。\n"
+        "以下のPubMed論文JSONだけを根拠に、病院・診療所・リハビリ現場で役立つ日本語ダイジェストを1本作成してください。\n"
+        "対象は医療の現場（診療、手術、リハビリ、外来/入院患者）に直接関係する内容に限定してください。\n"
+        "RCT、コホート、ガイドライン、診療成績、リハビリ、手術成績などを優先してください。\n"
         "推測で効果量や結論を補わないでください。abstractにないことは書かないでください。\n"
         "返答はMarkdownなしのJSONのみです。\n"
         "JSON schema:\n"
         "{\n"
-        '  "digest_summary": "全体を2-3文で要約",\n'
-        '  "image_prompt": "4:5縦長の雑誌特集風インフォグラフィック・グラレコ画像を生成するための日本語プロンプト",\n'
+        '  "digest_summary": "この1本を2-3文で要約",\n'
+        '  "image_prompt": "文字情報を多めに盛り込んだ4:5縦長グラレコ用の詳細日本語プロンプト（見出し・要点カード・数値・臨床メモを具体的に指定）",\n'
         '  "papers": [\n'
         "    {\n"
         '      "pmid": "string",\n'
         '      "title": "string",\n'
-        '      "japanese_summary": "目的・方法・結果・臨床的意味を4文以内",\n'
+        '      "japanese_summary": "目的・方法・結果・臨床的意味を6-8文",\n'
         '      "clinical_takeaway": "現場向けの一言",\n'
         '      "topics": ["string"],\n'
         '      "evidence_type": "string"\n'
@@ -43,8 +45,13 @@ def build_summary_prompt(run_date: str, papers: list[Paper]) -> str:
 def build_image_prompt(digest: DigestResult) -> str:
     paper_lines = []
     for paper in digest.papers:
+        topics = "、".join(paper.topics[:5]) if paper.topics else ""
         paper_lines.append(
-            f"- PMID {paper.pmid}: {paper.title}\n  要点: {paper.clinical_takeaway or paper.japanese_summary}"
+            f"- PMID {paper.pmid}: {paper.title}\n"
+            f"  要約: {paper.japanese_summary}\n"
+            f"  現場メモ: {paper.clinical_takeaway}\n"
+            f"  トピック: {topics}\n"
+            f"  エビデンス: {paper.evidence_type}"
         )
     source_text = (
         f"全体要約: {digest.digest_summary}\n\n"
@@ -53,7 +60,8 @@ def build_image_prompt(digest: DigestResult) -> str:
     )
     return (
         "あなたは雑誌の特集ページを作るアートディレクター兼情報デザイナーです。\n"
-        "以下の「可視化したい情報」を、読みやすく美しい日本語インフォグラフィック風グラレコにしてください。\n"
+        "以下の「可視化したい情報」は、肩関節診療の現場向けに選ばれた論文1本です。\n"
+        "病院、診療所、リハビリ室で読む医療者向けに、1枚で要点が伝わるグラレコにしてください。\n"
         "\n"
         "コンセプト：\n"
         "- 雑誌の見開き特集ページのような、洗練された図解グラレコ\n"
@@ -71,26 +79,29 @@ def build_image_prompt(digest: DigestResult) -> str:
         "レイアウト：\n"
         "- 4:5の縦長\n"
         "- 上部に大きなキャッチーなタイトル\n"
-        "- タイトル下に一言でわかるリード文\n"
+        "- タイトル下に2-3行のリード文\n"
         "- 中央にメイン図解\n"
-        "- 周囲に3〜5個の要点カード\n"
-        "- 下部に「つまり何が大事？」というまとめ欄\n"
+        "- 周囲に5〜7個の要点カード（各カードに見出し＋2行程度の説明）\n"
+        "- 「背景・目的」「方法」「結果」「臨床的ポイント」の4セクションを明示\n"
+        "- 下部に「つまり何が大事？」というまとめ欄（2-3行）\n"
         "- 視線が上から下へ自然に流れる構成にする\n"
         "\n"
         "情報整理ルール：\n"
         "- 入力情報を、読者が理解しやすい順番に再構成する\n"
         "- 重要度の高い内容ほど大きく扱う\n"
-        "- 要点カードには、短い見出し＋一言メモを入れる\n"
+        "- 要点カードには、短い見出し＋2行程度の説明文を入れる\n"
         "- 比較、手順、因果関係、構造がある場合は、表や矢印で表す\n"
         "- 専門用語は残しつつ、周囲に簡単な補足を添える\n"
+        "- abstractにある数値・条件・対象患者は可能な限り画像内テキストに反映する\n"
         "- 入力にない事実や数字は追加しない\n"
         "\n"
         "画像内テキスト：\n"
         "- 日本語\n"
         "- 見出しは短く、印象的に\n"
-        "- 本文は一言メモ程度に圧縮\n"
-        "- 画像内の文字量は少なめ\n"
-        "- 誤字を避けるため、長い文章をそのまま入れない\n"
+        "- 本文は圧縮しつつも情報量を多めに（ミニ記事1枚分の読み応え）\n"
+        "- 各セクション合計で15〜25個程度のテキスト要素（見出し・ラベル・短文・数値）を目安にする\n"
+        "- 1枚だけで論文の要点が追える密度にする\n"
+        "- 誤字を避けるため、長文段落は避け、箇条書きと短文で整理する\n"
         "\n"
         "###\n"
         "可視化したい情報：\n"
@@ -135,14 +146,23 @@ def generate_image_with_codex(
     client: CodexAppServerClient,
     watcher: ImageWatcher,
     mock: bool = False,
+    image_wait_seconds: int = 120,
 ) -> Path | None:
     if mock:
         return None
     before = watcher.snapshot()
     started_at = time.time()
     prompt = build_image_prompt(digest)
-    client.run_turn(prompt)
-    return watcher.newest_after(before, started_at)
+    result = client.run_turn(
+        prompt,
+        allow_network=True,
+        expect_image=True,
+    )
+    if result.saved_image_path:
+        saved = Path(result.saved_image_path)
+        if saved.exists():
+            return saved
+    return watcher.newest_after(before, started_at, wait_seconds=image_wait_seconds)
 
 
 def parse_digest_json(text: str) -> dict[str, Any]:
@@ -178,8 +198,8 @@ def mock_digest(run_date: str, papers: list[Paper]) -> DigestResult:
     return DigestResult(
         run_date=run_date,
         papers=digest_papers,
-        digest_summary="肩関節関連の新着論文から、臨床で確認したい3本を抽出しました。",
-        image_prompt="肩関節関連論文3本を、医療者向けの4:5縦長インフォグラフィック風グラレコに整理する。",
+        digest_summary="肩関節関連の新着論文から、医療現場で確認したい1本を抽出しました。",
+        image_prompt="肩関節関連論文1本を、文字情報多めの4:5縦長インフォグラフィック風グラレコに整理する。",
         raw_ai_text="mock",
     )
 

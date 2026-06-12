@@ -28,9 +28,13 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--date", default=default_run_date())
     run_parser.add_argument("--dry-run", action="store_true")
 
-    send_parser = sub.add_parser("approve-send")
+    send_parser = sub.add_parser("approve-send", help="Send an existing digest to LINE")
     send_parser.add_argument("--date", required=True)
     send_parser.add_argument("--dry-run", action="store_true")
+
+    send_alias = sub.add_parser("send", help="Alias for approve-send")
+    send_alias.add_argument("--date", required=True)
+    send_alias.add_argument("--dry-run", action="store_true")
 
     group_parser = sub.add_parser("set-line-group")
     group_parser.add_argument("--group-id", required=True)
@@ -55,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         app = ShoulderDigestApp(settings)
         print(json.dumps(app.run_daily(args.date, dry_run=args.dry_run), ensure_ascii=False, indent=2))
         return 0
-    if args.command == "approve-send":
+    if args.command in {"approve-send", "send"}:
         app = ShoulderDigestApp(settings)
         print(json.dumps(app.approve_send(args.date, dry_run=args.dry_run), ensure_ascii=False, indent=2))
         return 0

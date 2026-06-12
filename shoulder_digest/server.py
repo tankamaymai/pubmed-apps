@@ -159,18 +159,33 @@ def _make_handler(app: ShoulderDigestApp, settings: Settings) -> type[BaseHTTPRe
 
 
 def _scheduler_loop(app: ShoulderDigestApp, daily_time: str) -> None:
-    last_run = ""
     while True:
-        now = datetime.now()
-        current = now.strftime("%H:%M")
-        today = date.today().isoformat()
-        if current == daily_time and last_run != today:
-            try:
+        try:
+            if should_run_scheduled_daily(app, daily_time):
+                today = date.today().isoformat()
                 app.run_daily(run_date=today, dry_run=False)
-                last_run = today
-            except Exception as exc:
-                print(f"scheduled run failed: {exc}")
+        except Exception as exc:
+            print(f"scheduled run failed: {exc}")
         time.sleep(30)
+
+
+def should_run_scheduled_daily(app: ShoulderDigestApp, daily_time: str, now: datetime | None = None) -> bool:
+    current = now or datetime.now()
+    try:
+        scheduled_hour, scheduled_minute = map(int, daily_time.split(":", 1))
+    except ValueError:
+        return False
+    scheduled_today = current.replace(hour=scheduled_hour, minute=scheduled_minute, second=0, microsecond=0)
+    if current < scheduled_today:
+        return False
+
+    today = current.date().isoformat()
+    existing = app.storage.get_run(today)
+    if existing:
+        status = str(existing.get("status", ""))
+        if status in {"ready_for_approval", "delivered", "no_candidates"}:
+            return False
+    return True
 
 
 def render_home(app: ShoulderDigestApp) -> str:
@@ -197,6 +212,8 @@ def render_home(app: ShoulderDigestApp) -> str:
   <label>Run date <input id="date" value="{today}"></label>
   <button onclick="runDaily(true)">Dry run</button>
   <button onclick="runDaily(false)">Run</button>
+  <button onclick="sendOnly()">LINE送信のみ</button>
+  <p>同じ日付でも何度でも Run / LINE送信できます。配信済みの論文は次回 Run で別の論文を選びます。</p>
   <pre id="out"></pre>
   <script>
     async function runDaily(dryRun) {{
@@ -209,6 +226,15 @@ def render_home(app: ShoulderDigestApp) -> str:
       const data = await res.json();
       document.getElementById('out').textContent = JSON.stringify(data, null, 2);
       if (data.runDate) window.location.href = '/runs/' + data.runDate;
+    }}
+    async function sendOnly() {{
+      const date = document.getElementById('date').value;
+      const res = await fetch('/runs/' + date + '/approve-send', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{dryRun: false}})
+      }});
+      document.getElementById('out').textContent = JSON.stringify(await res.json(), null, 2);
     }}
   </script>
 </body>
@@ -308,6 +334,16 @@ def render_run(run: dict[str, Any]) -> str:
             f"<p>{escape(paper.get('japanese_summary') or paper.get('abstract', ''))}</p>"
             "</section>"
         )
+    status = str(run.get("status", ""))
+    can_send = status in {"ready_for_approval", "delivered"}
+    send_label = "LINE再送信" if status == "delivered" else "LINE送信"
+    send_buttons = ""
+    if can_send:
+        send_buttons = f"""
+  <button onclick="approve(false)">{send_label}</button>
+  <button onclick="approve(true)">送信Dry run</button>"""
+    else:
+        send_buttons = "<p>この run はまだ送信できません。Home から Run を実行してください。</p>"
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -328,8 +364,7 @@ def render_run(run: dict[str, Any]) -> str:
   <p>{escape(run.get('digest_summary', ''))}</p>
   {image}
   {''.join(papers)}
-  <button onclick="approve(false)">承認してLINE送信</button>
-  <button onclick="approve(true)">送信Dry run</button>
+  {send_buttons}
   <pre id="out"></pre>
   <script>
     async function approve(dryRun) {{

@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import Settings
 from .notion_client import EXPECTED_PROPERTIES, NotionClient
+from .obsidian_client import ObsidianVaultWriter
 from .storage import Storage
 
 
@@ -18,6 +19,7 @@ def build_checks(settings: Settings, stored_line_group_id: str | None = None) ->
     schema_dir = Path("schemas/codex_app_server/generated")
     schema_files = list(schema_dir.glob("*.json")) if schema_dir.exists() else []
     notion_validation = validate_notion(settings)
+    obsidian_validation = validate_obsidian(settings)
     if stored_line_group_id is None:
         stored_line_group_id = load_stored_line_group_id(settings)
     effective_line_group_id = settings.line_group_id or stored_line_group_id
@@ -50,8 +52,13 @@ def build_checks(settings: Settings, stored_line_group_id: str | None = None) ->
         "auto_send": settings.auto_send,
         "top_paper_count": settings.top_paper_count,
         "pubmed_lookback_days": settings.pubmed_lookback_days,
+        "pubmed_max_lookback_days": settings.pubmed_max_lookback_days,
         "generated_images_dir": str(settings.codex_generated_images_dir),
         "managed_media_dir": str(settings.media_dir()),
+        "obsidian_configured": bool(str(settings.obsidian_vault).strip()),
+        "obsidian_vault": str(settings.obsidian_vault),
+        "obsidian_notes_dir": settings.obsidian_notes_dir,
+        "obsidian_validation": obsidian_validation,
     }
     checks["setup_items"] = setup_items(checks)
     checks["ready_for_mock_dry_run"] = bool(checks["pubmed_eutilities_ready"] and checks["mock_ai"])
@@ -77,6 +84,11 @@ def build_checks(settings: Settings, stored_line_group_id: str | None = None) ->
         and isinstance(notion_validation, dict)
         and notion_validation.get("ok") is True
     )
+    checks["ready_for_obsidian_archive"] = bool(
+        checks["obsidian_configured"]
+        and isinstance(obsidian_validation, dict)
+        and obsidian_validation.get("ok") is True
+    )
     checks["ready_for_end_to_end"] = bool(checks["ready_for_line_delivery"] and checks["ready_for_notion_archive"])
     return checks
 
@@ -84,6 +96,8 @@ def build_checks(settings: Settings, stored_line_group_id: str | None = None) ->
 def setup_items(checks: dict[str, Any]) -> list[dict[str, Any]]:
     notion_validation = checks.get("notion_validation")
     notion_ok = bool(isinstance(notion_validation, dict) and notion_validation.get("ok") is True)
+    obsidian_validation = checks.get("obsidian_validation")
+    obsidian_ok = bool(isinstance(obsidian_validation, dict) and obsidian_validation.get("ok") is True)
     return [
         {
             "label": "Standalone Codex CLI",
@@ -113,6 +127,19 @@ def setup_items(checks: dict[str, Any]) -> list[dict[str, Any]]:
             "label": "Notion archive database",
             "ok": notion_ok,
             "detail": "Set NOTION_TOKEN and share the archive DB with the integration.",
+        },
+        {
+            "label": "Obsidian vault",
+            "ok": obsidian_ok if checks.get("obsidian_configured") else True,
+            "detail": (
+                f"Notes dir: {checks.get('obsidian_notes_dir')}."
+                if obsidian_ok
+                else (
+                    "Set OBSIDIAN_VAULT to your vault path."
+                    if not checks.get("obsidian_configured")
+                    else str((obsidian_validation or {}).get("error") or "Obsidian vault path is invalid.")
+                )
+            ),
         },
         {
             "label": "LINE Messaging API",
@@ -167,6 +194,16 @@ def check_codex_login(codex_bin: str) -> tuple[bool, str]:
         return False, str(exc)
     output = (result.stdout or result.stderr).strip()
     return result.returncode == 0, output
+
+
+def validate_obsidian(settings: Settings) -> dict[str, object]:
+    if not str(settings.obsidian_vault).strip():
+        return {"checked": False, "reason": "OBSIDIAN_VAULT is not configured"}
+    try:
+        client = ObsidianVaultWriter(settings.obsidian_vault, settings.obsidian_notes_dir)
+        return {"checked": True, **client.validate_vault()}
+    except Exception as exc:
+        return {"checked": True, "ok": False, "error": str(exc)}
 
 
 def validate_notion(settings: Settings) -> dict[str, object]:
