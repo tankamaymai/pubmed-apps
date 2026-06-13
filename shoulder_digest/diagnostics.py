@@ -126,7 +126,15 @@ def setup_items(checks: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "label": "Notion archive database",
             "ok": notion_ok,
-            "detail": "Set NOTION_TOKEN and share the archive DB with the integration.",
+            "detail": (
+                "Ready."
+                if notion_ok
+                else (
+                    "Set NOTION_TOKEN and share the archive DB with your Notion integration."
+                    if not checks.get("notion_configured")
+                    else _notion_validation_detail(notion_validation)
+                )
+            ),
         },
         {
             "label": "Obsidian vault",
@@ -204,6 +212,22 @@ def validate_obsidian(settings: Settings) -> dict[str, object]:
         return {"checked": True, **client.validate_vault()}
     except Exception as exc:
         return {"checked": True, "ok": False, "error": str(exc)}
+
+
+def _notion_validation_detail(notion_validation: dict[str, object] | None) -> str:
+    if not isinstance(notion_validation, dict):
+        return "Notion validation failed."
+    error = str(notion_validation.get("error") or "")
+    if "shared with your integration" in error:
+        return (
+            "Open the archive database in Notion and share it with your integration "
+            "(… → Connect to → pubmed-apps)."
+        )
+    if notion_validation.get("missing"):
+        return f"Missing properties: {', '.join(notion_validation['missing'])}"
+    if notion_validation.get("mismatched"):
+        return "Notion database schema does not match the expected properties."
+    return error or "Notion validation failed."
 
 
 def validate_notion(settings: Settings) -> dict[str, object]:

@@ -75,19 +75,46 @@ class Storage:
 
                 CREATE TABLE IF NOT EXISTS delivered_pmids (
                     pmid TEXT PRIMARY KEY,
-                    delivered_at TEXT NOT NULL
+                    delivered_at TEXT NOT NULL,
+                    run_date TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
+            try:
+                conn.execute("ALTER TABLE delivered_pmids ADD COLUMN run_date TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
             conn.execute(
                 """
-                INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at)
-                SELECT p.pmid, r.updated_at
+                INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at, run_date)
+                SELECT p.pmid, r.updated_at, p.run_date
                 FROM papers p
                 JOIN runs r ON r.run_date = p.run_date
                 WHERE p.status = 'delivered' OR r.status = 'delivered'
                 """
             )
+            self._backfill_delivered_run_dates(conn)
+
+    def _backfill_delivered_run_dates(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            "SELECT pmid FROM delivered_pmids WHERE run_date = '' OR run_date IS NULL"
+        ).fetchall()
+        for row in rows:
+            pmid = row["pmid"]
+            match = conn.execute(
+                """
+                SELECT run_date FROM runs
+                WHERE line_payload LIKE ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (f"%{pmid}%",),
+            ).fetchone()
+            if match:
+                conn.execute(
+                    "UPDATE delivered_pmids SET run_date = ? WHERE pmid = ?",
+                    (match["run_date"], pmid),
+                )
 
     def set_setting(self, key: str, value: str) -> None:
         with self.session() as conn:
@@ -102,19 +129,45 @@ class Storage:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
 
-    def known_pmids(self) -> set[str]:
+    def known_pmids(self, exclude_run_date: str = "") -> set[str]:
         with self.session() as conn:
-            rows = conn.execute("SELECT pmid FROM delivered_pmids").fetchall()
-        return {row["pmid"] for row in rows}
+            if exclude_run_date:
+                rows = conn.execute(
+                    """
+                    SELECT pmid FROM delivered_pmids
+                    WHERE run_date = '' OR run_date IS NULL OR run_date != ?
+                    """,
+                    (exclude_run_date,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT pmid FROM delivered_pmids").fetchall()
+        known = {row["pmid"] for row in rows}
+        if exclude_run_date:
+            with self.session() as conn:
+                exempt = {
+                    row["pmid"]
+                    for row in conn.execute(
+                        "SELECT pmid FROM papers WHERE run_date = ?",
+                        (exclude_run_date,),
+                    ).fetchall()
+                }
+            known -= exempt
+        return known
 
-    def mark_pmids_delivered(self, pmids: list[str]) -> None:
+    def mark_pmids_delivered(self, pmids: list[str], run_date: str = "") -> None:
         now = utc_now_iso()
         with self.session() as conn:
             for pmid in pmids:
                 if pmid:
                     conn.execute(
-                        "INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at) VALUES(?, ?)",
-                        (pmid, now),
+                        """
+                        INSERT INTO delivered_pmids(pmid, delivered_at, run_date)
+                        VALUES(?, ?, ?)
+                        ON CONFLICT(pmid) DO UPDATE SET
+                            delivered_at = excluded.delivered_at,
+                            run_date = excluded.run_date
+                        """,
+                        (pmid, now, run_date),
                     )
 
     def upsert_run(self, run_date: str, status: str, dry_run: bool, error: str = "") -> None:
@@ -174,6 +227,13 @@ class Storage:
                     ),
                 )
 
+    def update_image_url(self, run_date: str, image_url: str) -> None:
+        with self.session() as conn:
+            conn.execute(
+                "UPDATE runs SET image_url = ?, updated_at = ? WHERE run_date = ?",
+                (image_url, utc_now_iso(), run_date),
+            )
+
     def save_digest(self, digest: DigestResult) -> None:
         now = utc_now_iso()
         with self.session() as conn:
@@ -226,8 +286,15 @@ class Storage:
     def mark_notion_page(self, run_date: str, pmid: str, page_id: str) -> None:
         with self.session() as conn:
             conn.execute(
-                "UPDATE papers SET notion_page_id = ? WHERE run_date = ? AND pmid = ?",
+                "UPDATE papers SET notion_page_id = ?, error = '' WHERE run_date = ? AND pmid = ?",
                 (page_id, run_date, pmid),
+            )
+
+    def mark_notion_error(self, run_date: str, pmid: str, error: str) -> None:
+        with self.session() as conn:
+            conn.execute(
+                "UPDATE papers SET error = ? WHERE run_date = ? AND pmid = ?",
+                (error[:2000], run_date, pmid),
             )
 
     def save_line_payload(self, run_date: str, payload: dict[str, Any], delivered: bool) -> None:
@@ -245,7 +312,7 @@ class Storage:
                     for row in conn.execute("SELECT pmid FROM papers WHERE run_date = ?", (run_date,)).fetchall()
                 ]
         if delivered:
-            self.mark_pmids_delivered(delivered_pmids)
+            self.mark_pmids_delivered(delivered_pmids, run_date)
 
     def mark_error(self, run_date: str, error: str) -> None:
         with self.session() as conn:

@@ -20,8 +20,8 @@ class Settings:
     daily_time: str = "07:00"
     public_base_url: str = ""
     top_paper_count: int = 1
-    pubmed_lookback_days: int = 30
-    pubmed_max_lookback_days: int = 365
+    pubmed_lookback_days: int = 90
+    pubmed_max_lookback_days: int = 1825
     auto_send: bool = False
 
     ncbi_api_key: str = ""
@@ -62,10 +62,10 @@ class Settings:
             daily_time=os.environ.get("SHOULDER_DIGEST_DAILY_TIME", "07:00"),
             public_base_url=os.environ.get("SHOULDER_DIGEST_PUBLIC_BASE_URL", "").rstrip("/"),
             top_paper_count=max(1, int(os.environ.get("SHOULDER_DIGEST_TOP_PAPER_COUNT", "1"))),
-            pubmed_lookback_days=(lookback := max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS", "30")))),
+            pubmed_lookback_days=(lookback := max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS", "90")))),
             pubmed_max_lookback_days=max(
                 lookback,
-                max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS", "365"))),
+                max(1, int(os.environ.get("SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS", "1825"))),
             ),
             auto_send=_bool_env("SHOULDER_DIGEST_AUTO_SEND"),
             ncbi_api_key=os.environ.get("NCBI_API_KEY", ""),

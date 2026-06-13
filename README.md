@@ -60,11 +60,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_startup.ps1
 
 - AI用途にOpenAI API keyは使いません。Codex CLIのChatGPTログインを使います。
 - このアプリはローカルPC限定です。`codex app-server` のWebSocket公開やVPS公開はしません。
-- LINEの画像メッセージはLINE側から取得できるHTTPS画像URLが必要です。実送信には `SHOULDER_DIGEST_PUBLIC_BASE_URL` をngrok/Cloudflare Tunnel等の公開HTTPS URLに設定してください。
+- LINEの画像メッセージはLINE側から取得できるHTTPS画像URLが必要です。`scripts/start_shoulder_digest.ps1` 起動時、`serve` / `run` / `approve-send` 実行時に、ngrok の現在URLを `.env` の `SHOULDER_DIGEST_PUBLIC_BASE_URL` へ自動同期します。手動更新する場合は `python -m shoulder_digest sync-ngrok-url` を実行してください。
 - `SHOULDER_DIGEST_MOCK_AI=1` の場合、CodexとImageGenを呼ばずにダミー要約とダミー画像パスで処理します。PubMed/LINE/Notionのロジック確認用です。
 - `NCBI_API_KEY` は任意です。未設定でもPubMed E-utilitiesを使いますが、NCBIの低レート制限に合わせた運用になります。
-- `SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS` はPubMed検索の最初の登録日lookbackです。既定は30日です。
-- `SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS` は候補が見つからない場合にさらに遡る最大日数です。既定は365日で、30日→90日→365日の順に広げて検索します。
+- `SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS` はPubMed検索の最初の登録日lookbackです。既定は90日です。
+- `SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS` は候補が見つからない場合にさらに遡る最大日数です。既定は1825日（約5年）で、90日→270日→365日→730日→1825日の順に広げて検索します。
 - 既にLINE配信済みのPMIDは重複配信しないため、過去分から未配信の論文を優先して選びます。
 - `SHOULDER_DIGEST_AUTO_SEND=1` にすると、日次ジョブ完了後にLINEへ自動送信します。既定は `0` で、Web UI または CLI から手動送信します。
 - 同じ日付でも `run` / `approve-send`（または `send`）は何度でも実行できます。配信済み PMID は次回の選定から除外されます。
@@ -90,6 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_startup.ps1
 python -m shoulder_digest serve --schedule
 python -m shoulder_digest run --date 2026-06-08 --dry-run
 python -m shoulder_digest approve-send --date 2026-06-08
+python -m shoulder_digest sync-ngrok-url
 python -m shoulder_digest set-line-group --group-id Cxxxxxxxx
 python -m shoulder_digest doctor
 python -m shoulder_digest preflight --allow-incomplete

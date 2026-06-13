@@ -87,6 +87,8 @@ class NotionClientTests(unittest.TestCase):
                     "evidence_type": "RCT",
                     "relevance_score": 10,
                     "japanese_summary": "要約",
+                    "clinical_takeaway": "臨床ポイント",
+                    "abstract": "Abstract text",
                 },
                 "全体要約",
                 "画像プロンプト",
@@ -109,6 +111,10 @@ class NotionClientTests(unittest.TestCase):
         self.assertEqual(captured[1]["method"], "PATCH")
         self.assertEqual(captured[1]["path"], "/v1/pages/page_1")
         self.assertTrue(captured[1]["body"]["properties"]["LINE Delivered"]["checkbox"])
+        self.assertEqual(
+            captured[1]["body"]["properties"]["Status"]["rich_text"][0]["text"]["content"],
+            "delivered",
+        )
 
 
 if __name__ == "__main__":

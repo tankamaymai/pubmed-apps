@@ -92,6 +92,21 @@ class PubMedTests(unittest.TestCase):
         self.assertIn("Randomized Controlled Trial", query)
         self.assertIn("rehabilitation[Title/Abstract]", query)
         self.assertIn("exoskeleton[Title/Abstract]", query)
+        self.assertIn("hip[Title/Abstract]", query)
+        self.assertIn("NOT (", query)
+
+    def test_is_shoulder_focused_rejects_hip_instability_paper(self):
+        hip = Paper(
+            pmid="41910967",
+            title=(
+                "What Are the Biomechanical Features and Metrics for Native Hip Instability? "
+                "Consensus Statements From a Scoping Review and an International Multidisciplinary Delphi Study."
+            ),
+            abstract="Patients with hip instability were evaluated. " * 3,
+            topics=["labrum", "instability"],
+            relevance_score=10,
+        )
+        self.assertFalse(is_shoulder_focused(hip))
 
     def test_is_clinically_oriented_rejects_non_clinical_and_accepts_rct(self):
         rct = Paper(
@@ -124,8 +139,24 @@ class PubMedTests(unittest.TestCase):
         score_paper(exoskeleton)
         self.assertFalse(is_clinically_oriented(exoskeleton))
 
+    def test_is_clinically_oriented_accepts_systematic_review_with_biomechanical_terms(self):
+        review = Paper(
+            pmid="39652591",
+            title="Thinking outside the shoulder: A systematic review and metanalysis of kinetic chain characteristics in non-athletes with shoulder pain.",
+            abstract=(
+                "Although biomechanical impairments in components of the kinetic chain have already been reported, "
+                "this systematic review synthesized evidence in non-athlete individuals with shoulder pain. " * 3
+            ),
+            article_types=["Systematic Review", "Meta-Analysis"],
+            topics=["shoulder"],
+        )
+        score_paper(review)
+        self.assertTrue(is_clinically_oriented(review))
+
     def test_lookback_search_steps_expands_when_needed(self):
         self.assertEqual(lookback_search_steps(30, 365), [30, 90, 365])
+        self.assertEqual(lookback_search_steps(30, 730), [30, 90, 365, 730])
+        self.assertEqual(lookback_search_steps(90, 1825), [90, 270, 365, 730, 1825])
         self.assertEqual(lookback_search_steps(7, 30), [7, 30])
 
     def test_search_retmax_for_lookback_scales_with_window(self):

@@ -13,6 +13,7 @@ from .line_client import LineClient, build_line_messages
 from .models import DigestResult
 from .notion_client import NotionClient
 from .obsidian_client import ObsidianVaultWriter
+from .ngrok_sync import rebuild_image_url, sync_public_base_url
 from .pubmed import PubMedClient, default_run_date, search_top_papers
 from .storage import Storage
 
@@ -45,12 +46,13 @@ class ShoulderDigestApp:
 
     def run_daily(self, run_date: str | None = None, dry_run: bool = False) -> dict[str, Any]:
         run_date = run_date or default_run_date()
+        public_url_sync = self._sync_public_base_url()
         self.storage.upsert_run(run_date, "running", dry_run)
         try:
             selected, lookback_used, pmids = search_top_papers(
                 self.pubmed,
                 run_date,
-                self.storage.known_pmids(),
+                self.storage.known_pmids(exclude_run_date=run_date),
                 limit=self.settings.top_paper_count,
                 lookback_days=self.settings.pubmed_lookback_days,
                 max_lookback_days=self.settings.pubmed_max_lookback_days,
@@ -77,13 +79,15 @@ class ShoulderDigestApp:
                 digest.image_path = ""
                 digest.image_url = ""
             self.storage.save_digest(digest)
-            self._archive_to_notion(digest, selected, dry_run=dry_run)
+            notion_archive = self.archive_notion_for_run(run_date, dry_run=dry_run, mark_delivered=False)
             self._archive_to_obsidian(digest, selected, dry_run=dry_run)
             response = {
                 "runDate": run_date,
                 "status": "ready_for_approval",
                 "digest": digest.to_dict(),
                 "lookbackDays": lookback_used,
+                "notionArchive": notion_archive,
+                "publicUrlSync": public_url_sync,
             }
             if self.settings.auto_send and not dry_run:
                 response["lineDelivery"] = self.approve_send(run_date, dry_run=False)
@@ -104,7 +108,8 @@ class ShoulderDigestApp:
         group_id = self.settings.line_group_id or self.storage.get_setting("line_group_id")
         if not group_id:
             raise RuntimeError("LINE group ID is not configured. Add the bot to a group and receive a webhook first.")
-        image_url = run.get("image_url") or ""
+        public_url_sync = self._sync_public_base_url()
+        image_url = self._current_image_url(run)
         if not image_url and not dry_run:
             raise RuntimeError("Image URL is empty. Set SHOULDER_DIGEST_PUBLIC_BASE_URL before LINE image delivery.")
         messages = build_line_messages(
@@ -114,12 +119,11 @@ class ShoulderDigestApp:
             run.get("papers", []),
         )
         result = self.line.push(group_id, messages, dry_run=dry_run)
+        result["publicUrlSync"] = public_url_sync
         self.storage.save_line_payload(run_date, result.get("payload", result), delivered=not dry_run)
-        if not dry_run and self.notion.configured:
-            for paper in run.get("papers", []):
-                page_id = paper.get("notion_page_id")
-                if page_id:
-                    self.notion.mark_delivered(page_id)
+        notion_archive = self.archive_notion_for_run(run_date, dry_run=dry_run, mark_delivered=not dry_run)
+        if notion_archive.get("results"):
+            result["notionArchive"] = notion_archive
         if not dry_run and self.obsidian.configured:
             self.obsidian.mark_delivered(run_date, dry_run=False)
         return result
@@ -143,10 +147,30 @@ class ShoulderDigestApp:
     def latest_run_date(self) -> str:
         return self.storage.latest_run_date()
 
+    def _sync_public_base_url(self) -> dict[str, Any]:
+        try:
+            result = sync_public_base_url(env_path=Path(".env"), port=self.settings.port)
+        except FileNotFoundError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except OSError as exc:
+            return {"ok": False, "reason": str(exc)}
+        if result.get("ok") and result.get("url"):
+            self.settings.public_base_url = str(result["url"])
+        return result
+
+    def _current_image_url(self, run: dict[str, Any]) -> str:
+        image_path = str(run.get("image_path") or "")
+        if image_path and self.settings.public_base_url:
+            refreshed = rebuild_image_url(self.settings.public_base_url, image_path)
+            if refreshed and refreshed != run.get("image_url"):
+                self.storage.update_image_url(str(run.get("run_date", "")), refreshed)
+            return refreshed
+        return str(run.get("image_url") or "")
+
     def public_image_url(self, path: Path) -> str:
         if not self.settings.public_base_url:
             return ""
-        return f"{self.settings.public_base_url}/generated-images/{path.name}"
+        return rebuild_image_url(self.settings.public_base_url, str(path))
 
     def image_path_for_name(self, name: str) -> Path:
         return self.settings.media_dir() / Path(name).name
@@ -160,33 +184,67 @@ class ShoulderDigestApp:
             shutil.copy2(source, target)
         return target
 
-    def _archive_to_notion(self, digest: DigestResult, selected: list[Any], dry_run: bool) -> None:
+    def archive_notion_for_run(
+        self,
+        run_date: str,
+        dry_run: bool = False,
+        mark_delivered: bool | None = None,
+    ) -> dict[str, Any]:
         if not self.notion.configured:
-            return
-        selected_by_pmid = {paper.pmid: paper for paper in selected}
-        for digest_paper in digest.papers:
-            source = selected_by_pmid.get(digest_paper.pmid)
-            paper_dict = source.to_ai_dict() if source else {"pmid": digest_paper.pmid, "title": digest_paper.title}
-            paper_dict.update(
-                {
-                    "japanese_summary": digest_paper.japanese_summary,
-                    "clinical_takeaway": digest_paper.clinical_takeaway,
-                    "topics": digest_paper.topics or paper_dict.get("topics", []),
-                    "evidence_type": digest_paper.evidence_type or paper_dict.get("evidence_type", ""),
-                    "status": "summarized",
-                }
-            )
-            response = self.notion.create_paper_page(
-                digest.run_date,
-                paper_dict,
-                digest.digest_summary,
-                digest.image_prompt,
-                digest.image_url,
-                dry_run=dry_run,
-            )
-            page_id = response.get("id") if isinstance(response, dict) else ""
-            if page_id and not dry_run:
-                self.storage.mark_notion_page(digest.run_date, digest_paper.pmid, page_id)
+            return {"skipped": True, "reason": "NOTION_TOKEN or NOTION_DATABASE_ID is not configured"}
+
+        run = self.storage.get_run(run_date)
+        if not run or not run.get("papers"):
+            return {"skipped": True, "reason": f"No papers found for run {run_date}"}
+
+        if mark_delivered is None:
+            mark_delivered = run.get("status") == "delivered"
+
+        results: list[dict[str, Any]] = []
+        for paper in run["papers"]:
+            page_id = paper.get("notion_page_id") or ""
+            if page_id:
+                if mark_delivered and not dry_run:
+                    try:
+                        self.notion.mark_delivered(page_id, dry_run=False)
+                        results.append({"pmid": paper.get("pmid", ""), "status": "delivered", "page_id": page_id})
+                    except Exception as exc:
+                        self.storage.mark_notion_error(run_date, paper.get("pmid", ""), str(exc))
+                        results.append({"pmid": paper.get("pmid", ""), "status": "error", "error": str(exc)})
+                else:
+                    results.append({"pmid": paper.get("pmid", ""), "status": "exists", "page_id": page_id})
+                continue
+
+            paper_dict = dict(paper)
+            paper_dict["status"] = "delivered" if mark_delivered else paper_dict.get("status") or "summarized"
+            try:
+                response = self.notion.create_paper_page(
+                    run_date,
+                    paper_dict,
+                    run.get("digest_summary", ""),
+                    run.get("image_prompt", ""),
+                    run.get("image_url", ""),
+                    dry_run=dry_run,
+                )
+                page_id = response.get("id") if isinstance(response, dict) else ""
+                if page_id and not dry_run:
+                    self.storage.mark_notion_page(run_date, paper.get("pmid", ""), page_id)
+                    if mark_delivered:
+                        self.notion.mark_delivered(page_id, dry_run=False)
+                results.append(
+                    {
+                        "pmid": paper.get("pmid", ""),
+                        "status": "created" if page_id or dry_run else "missing_id",
+                        "page_id": page_id,
+                        "dry_run": dry_run,
+                    }
+                )
+            except Exception as exc:
+                self.storage.mark_notion_error(run_date, paper.get("pmid", ""), str(exc))
+                results.append({"pmid": paper.get("pmid", ""), "status": "error", "error": str(exc)})
+
+        ok = all(item.get("status") in {"created", "exists", "delivered"} or item.get("dry_run") for item in results)
+        return {"runDate": run_date, "ok": ok, "results": results}
 
     def _archive_to_obsidian(self, digest: DigestResult, selected: list[Any], dry_run: bool) -> None:
         if not self.obsidian.configured:

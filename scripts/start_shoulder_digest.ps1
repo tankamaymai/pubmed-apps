@@ -56,6 +56,18 @@ if (-not $ngrok) {
     Write-Host "ngrok is already running."
 } else {
     Start-BackgroundProcess -Name "ngrok" -FilePath $ngrok.Source -ArgumentList "http $Port" -LogPath $ngrokLog
+    Start-Sleep -Seconds 2
+}
+
+if ($ngrok) {
+    $syncResult = & $python -m shoulder_digest sync-ngrok-url --port $Port 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Updated .env with current ngrok URL."
+        Write-Host $syncResult
+    } else {
+        Write-Warning "Could not sync ngrok URL to .env. LINE image delivery may fail until ngrok is running."
+        Write-Warning $syncResult
+    }
 }
 
 Write-Host "Startup complete. UI: http://127.0.0.1:$Port/"

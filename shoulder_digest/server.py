@@ -19,6 +19,14 @@ from .pubmed import default_run_date
 
 def serve(settings: Settings, schedule: bool = False) -> None:
     app = ShoulderDigestApp(settings)
+    sync_result = app._sync_public_base_url()
+    if sync_result.get("ok"):
+        if sync_result.get("changed"):
+            print(f"Updated SHOULDER_DIGEST_PUBLIC_BASE_URL -> {sync_result['url']}")
+        else:
+            print(f"SHOULDER_DIGEST_PUBLIC_BASE_URL is current: {sync_result['url']}")
+    else:
+        print(f"ngrok URL sync skipped: {sync_result.get('reason', 'unknown')}")
     if schedule:
         threading.Thread(target=_scheduler_loop, args=(app, settings.daily_time), daemon=True).start()
     handler = _make_handler(app, settings)

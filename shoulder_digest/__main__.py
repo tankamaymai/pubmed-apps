@@ -8,6 +8,7 @@ from pathlib import Path
 from .app import ShoulderDigestApp
 from .config import Settings, default_codex_bin, load_dotenv
 from .diagnostics import build_checks, doctor_exit_code
+from .ngrok_sync import sync_public_base_url
 from .preflight import run_preflight
 from .pubmed import default_run_date
 from .server import serve
@@ -44,6 +45,17 @@ def main(argv: list[str] | None = None) -> int:
     preflight_parser.add_argument("--live-pubmed", action="store_true")
     preflight_parser.add_argument("--allow-incomplete", action="store_true")
 
+    archive_parser = sub.add_parser("archive-notion", help="Archive a run to Notion")
+    archive_parser.add_argument("--date", required=True)
+    archive_parser.add_argument("--dry-run", action="store_true")
+    archive_parser.add_argument("--mark-delivered", action="store_true")
+
+    sync_parser = sub.add_parser("sync-ngrok-url", help="Update SHOULDER_DIGEST_PUBLIC_BASE_URL in .env from ngrok")
+    sync_parser.add_argument("--env", default=".env")
+    sync_parser.add_argument("--port", type=int, default=settings.port)
+    sync_parser.add_argument("--wait-seconds", type=float, default=1.0)
+    sync_parser.add_argument("--max-attempts", type=int, default=5)
+
     sub.add_parser("doctor")
 
     init_parser = sub.add_parser("init-env")
@@ -63,6 +75,20 @@ def main(argv: list[str] | None = None) -> int:
         app = ShoulderDigestApp(settings)
         print(json.dumps(app.approve_send(args.date, dry_run=args.dry_run), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "archive-notion":
+        app = ShoulderDigestApp(settings)
+        print(
+            json.dumps(
+                app.archive_notion_for_run(
+                    args.date,
+                    dry_run=args.dry_run,
+                    mark_delivered=args.mark_delivered or None,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
     if args.command == "set-line-group":
         app = ShoulderDigestApp(settings)
         app.storage.set_setting("line_group_id", args.group_id)
@@ -72,6 +98,15 @@ def main(argv: list[str] | None = None) -> int:
         report = run_preflight(settings, run_date=args.date, live_pubmed=args.live_pubmed)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] or args.allow_incomplete else 1
+    if args.command == "sync-ngrok-url":
+        result = sync_public_base_url(
+            args.env,
+            port=args.port,
+            wait_seconds=args.wait_seconds,
+            max_attempts=args.max_attempts,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
     if args.command == "doctor":
         return doctor(settings)
     if args.command == "init-env":

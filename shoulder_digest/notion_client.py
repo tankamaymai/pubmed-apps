@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -67,15 +68,7 @@ class NotionClient:
                 "LINE Delivered": {"checkbox": False},
                 "Error": {"rich_text": [{"text": {"content": paper.get("error", "")[:2000]}}]},
             },
-            "children": [
-                {
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [{"type": "text", "text": {"content": digest_summary[:2000]}}],
-                    },
-                }
-            ],
+            "children": self._build_page_blocks(paper, digest_summary, image_url),
         }
         topics = paper.get("topics") or []
         if topics:
@@ -92,10 +85,61 @@ class NotionClient:
         return self._request(f"{self.api_base_url}/v1/pages", payload)
 
     def mark_delivered(self, page_id: str, dry_run: bool = False) -> dict[str, Any]:
-        payload = {"properties": {"LINE Delivered": {"checkbox": True}}}
+        payload = {
+            "properties": {
+                "LINE Delivered": {"checkbox": True},
+                "Status": {"rich_text": [{"text": {"content": "delivered"}}]},
+            }
+        }
         if dry_run:
             return {"dryRun": True, "payload": payload}
         return self._request(f"{self.api_base_url}/v1/pages/{page_id}", payload, method="PATCH")
+
+    @staticmethod
+    def _build_page_blocks(paper: dict[str, Any], digest_summary: str, image_url: str) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        sections = [
+            ("概要", digest_summary),
+            ("要約", paper.get("japanese_summary", "")),
+            ("臨床的ポイント", paper.get("clinical_takeaway", "")),
+            ("Abstract", paper.get("abstract", "")),
+        ]
+        for heading, text in sections:
+            content = str(text or "").strip()
+            if not content:
+                continue
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "heading_2",
+                    "heading_2": {"rich_text": [{"type": "text", "text": {"content": heading}}]},
+                }
+            )
+            blocks.extend(_paragraph_blocks(content))
+        if image_url:
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "heading_2",
+                    "heading_2": {"rich_text": [{"type": "text", "text": {"content": "グラレコ"}}]},
+                }
+            )
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "image",
+                    "image": {"type": "external", "external": {"url": image_url}},
+                }
+            )
+        if not blocks:
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": "（内容なし）"}}]},
+                }
+            )
+        return blocks
 
     def fetch_database(self) -> dict[str, Any]:
         return self._request(f"{self.api_base_url}/v1/databases/{self.database_id}", None, method="GET")
@@ -129,5 +173,25 @@ class NotionClient:
                 "Notion-Version": self.notion_version,
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Notion API {exc.code}: {body}") from exc
+
+
+def _paragraph_blocks(text: str, chunk_size: int = 1800) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    remaining = text.strip()
+    while remaining:
+        chunk = remaining[:chunk_size]
+        remaining = remaining[chunk_size:]
+        blocks.append(
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]},
+            }
+        )
+    return blocks

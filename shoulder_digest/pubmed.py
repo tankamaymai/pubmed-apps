@@ -18,10 +18,27 @@ SHOULDER_QUERY = (
     'supraspinatus[Title/Abstract] OR infraspinatus[Title/Abstract] OR '
     'subscapularis[Title/Abstract] OR "shoulder arthroplasty"[Title/Abstract] OR '
     '"reverse shoulder"[Title/Abstract] OR "shoulder instability"[Title/Abstract] OR '
-    'labrum[Title/Abstract] OR labral[Title/Abstract] OR '
+    '"glenoid labrum"[Title/Abstract] OR "shoulder labrum"[Title/Abstract] OR '
+    '("labrum"[Title/Abstract] AND shoulder[Title/Abstract]) OR '
+    '("labral"[Title/Abstract] AND shoulder[Title/Abstract]) OR '
     '"adhesive capsulitis"[Title/Abstract] OR "frozen shoulder"[Title/Abstract] OR '
     'scapular[Title/Abstract] OR acromioclavicular[Title/Abstract] OR '
     '"shoulder rehabilitation"[Title/Abstract])'
+)
+
+NON_SHOULDER_JOINT_FILTER = (
+    "NOT ("
+    '"Hip Joint"[MeSH Terms] OR '
+    'hip[Title/Abstract] OR '
+    '"Knee Joint"[MeSH Terms] OR '
+    'knee[Title/Abstract] OR '
+    '"Ankle Joint"[MeSH Terms] OR '
+    'ankle[Title/Abstract] OR '
+    'patella[Title/Abstract] OR '
+    '"femoral head"[Title/Abstract] OR '
+    'acetabular[Title/Abstract] OR '
+    'tibiofemoral[Title/Abstract]'
+    ")"
 )
 
 CLINICAL_FILTER = (
@@ -60,7 +77,7 @@ CLINICAL_FILTER = (
     ')'
 )
 
-SHOULDER_CLINICAL_QUERY = f"({SHOULDER_QUERY}) AND {CLINICAL_FILTER}"
+SHOULDER_CLINICAL_QUERY = f"({SHOULDER_QUERY}) AND {CLINICAL_FILTER} AND {NON_SHOULDER_JOINT_FILTER}"
 
 TOPIC_WEIGHTS = {
     "rotator cuff": 5,
@@ -68,7 +85,7 @@ TOPIC_WEIGHTS = {
     "glenohumeral": 4,
     "arthroplasty": 4,
     "reverse shoulder": 5,
-    "instability": 4,
+    "shoulder instability": 4,
     "labrum": 3,
     "labral": 3,
     "adhesive capsulitis": 4,
@@ -137,10 +154,36 @@ NON_CLINICAL_TEXT_PENALTIES = {
     "anatomical study": 6,
     "exoskeleton": 10,
     "ergonomics": 10,
-    "occupational": 10,
     "workplace": 8,
     "industrial worker": 8,
     "drilling performance": 10,
+}
+
+HARD_NON_CLINICAL_TEXT_TERMS = frozenset(
+    {
+        "in vitro",
+        "animal model",
+        "mouse model",
+        "rat model",
+        "cadaveric",
+        "cadaver study",
+        "finite element analysis",
+        "exoskeleton",
+        "drilling performance",
+    }
+)
+
+STRONG_CLINICAL_ARTICLE_TYPES = {
+    "Randomized Controlled Trial",
+    "Clinical Trial",
+    "Controlled Clinical Trial",
+    "Meta-Analysis",
+    "Systematic Review",
+    "Practice Guideline",
+    "Multicenter Study",
+    "Observational Study",
+    "Comparative Study",
+    "Evaluation Study",
 }
 
 HEALTHCARE_PRACTICE_PATTERN = re.compile(
@@ -161,7 +204,8 @@ HEALTHCARE_PRACTICE_PATTERN = re.compile(
     r"rotator cuff repair|"
     r"shoulder instability|"
     r"adhesive capsulitis|"
-    r"frozen shoulder"
+    r"frozen shoulder|"
+    r"shoulder pain"
     r")\b",
     re.IGNORECASE,
 )
@@ -172,13 +216,53 @@ STRONG_SHOULDER_TERMS = {
     "glenohumeral",
     "arthroplasty",
     "reverse shoulder",
-    "instability",
+    "shoulder instability",
     "labrum",
     "labral",
     "adhesive capsulitis",
     "frozen shoulder",
     "acromioclavicular",
+    "shoulder",
 }
+
+NON_SHOULDER_JOINT_PATTERN = re.compile(
+    r"\b("
+    r"hip|"
+    r"knee|"
+    r"ankle|"
+    r"patella|"
+    r"femoral head|"
+    r"acetabular|"
+    r"tibiofemoral|"
+    r"hip joint|"
+    r"knee joint"
+    r")\b",
+    re.IGNORECASE,
+)
+
+SHOULDER_TITLE_PATTERN = re.compile(
+    r"\b("
+    r"shoulder|"
+    r"glenohumeral|"
+    r"rotator cuff|"
+    r"supraspinatus|"
+    r"infraspinatus|"
+    r"subscapularis|"
+    r"shoulder arthroplasty|"
+    r"reverse shoulder|"
+    r"shoulder instability|"
+    r"glenoid|"
+    r"adhesive capsulitis|"
+    r"frozen shoulder|"
+    r"acromioclavicular|"
+    r"scapular|"
+    r"shoulder labrum|"
+    r"glenoid labrum|"
+    r"labrum|"
+    r"labral"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 class PubMedClient:
@@ -380,11 +464,19 @@ def score_paper(paper: Paper) -> Paper:
     return paper
 
 
+LOOKBACK_MILESTONES = (365, 730, 1825)
+
+
 def lookback_search_steps(lookback_days: int, max_lookback_days: int) -> list[int]:
     maximum = max(1, max_lookback_days)
     initial = max(1, min(lookback_days, maximum))
+    candidates = [initial, max(initial * 3, 90)]
+    for milestone in LOOKBACK_MILESTONES:
+        if milestone <= maximum:
+            candidates.append(milestone)
+    candidates.append(maximum)
     steps: list[int] = []
-    for candidate in (initial, max(initial * 3, 90), maximum):
+    for candidate in candidates:
         value = min(candidate, maximum)
         if value not in steps:
             steps.append(value)
@@ -401,8 +493,8 @@ def search_top_papers(
     seen_pmids: set[str],
     *,
     limit: int = 1,
-    lookback_days: int = 30,
-    max_lookback_days: int = 365,
+    lookback_days: int = 90,
+    max_lookback_days: int = 1825,
 ) -> tuple[list[Paper], int, list[str]]:
     last_pmids: list[str] = []
     last_lookback = lookback_days
@@ -439,24 +531,15 @@ def is_clinically_oriented(paper: Paper) -> bool:
     if any(article_type in LOW_EVIDENCE_ARTICLE_TYPES for article_type in paper.article_types):
         return False
     haystack = f"{paper.title}\n{paper.abstract}".lower()
-    if any(term in haystack for term in NON_CLINICAL_TEXT_PENALTIES):
+    has_strong_type = any(article_type in STRONG_CLINICAL_ARTICLE_TYPES for article_type in paper.article_types)
+    if any(term in haystack for term in HARD_NON_CLINICAL_TEXT_TERMS):
         return False
-    if not HEALTHCARE_PRACTICE_PATTERN.search(haystack):
+    if not has_strong_type and any(term in haystack for term in NON_CLINICAL_TEXT_PENALTIES):
+        return False
+    if not has_strong_type and not HEALTHCARE_PRACTICE_PATTERN.search(haystack):
         return False
 
-    strong_clinical_types = {
-        "Randomized Controlled Trial",
-        "Clinical Trial",
-        "Controlled Clinical Trial",
-        "Meta-Analysis",
-        "Systematic Review",
-        "Practice Guideline",
-        "Multicenter Study",
-        "Observational Study",
-        "Comparative Study",
-        "Evaluation Study",
-    }
-    if any(article_type in strong_clinical_types for article_type in paper.article_types):
+    if has_strong_type:
         return True
     if any(article_type.lower() == "case reports" for article_type in paper.article_types):
         return paper.relevance_score >= 8
@@ -470,6 +553,8 @@ def is_clinically_oriented(paper: Paper) -> bool:
 
 def is_shoulder_focused(paper: Paper) -> bool:
     title = paper.title.lower()
-    if any(term in title for term in TOPIC_WEIGHTS):
-        return True
-    return any(topic in STRONG_SHOULDER_TERMS for topic in paper.topics)
+
+    if NON_SHOULDER_JOINT_PATTERN.search(title) and not re.search(r"\bshoulder\b", title):
+        return False
+
+    return bool(SHOULDER_TITLE_PATTERN.search(title))
