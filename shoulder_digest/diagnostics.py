@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .ngrok_sync import verify_public_base_url
 from .notion_client import EXPECTED_PROPERTIES, NotionClient
 from .obsidian_client import ObsidianVaultWriter
 from .storage import Storage
@@ -23,6 +24,11 @@ def build_checks(settings: Settings, stored_line_group_id: str | None = None) ->
     if stored_line_group_id is None:
         stored_line_group_id = load_stored_line_group_id(settings)
     effective_line_group_id = settings.line_group_id or stored_line_group_id
+    public_url_check = verify_public_base_url(settings.public_base_url) if settings.public_base_url else {
+        "ok": False,
+        "reason": "empty url",
+        "url": "",
+    }
     checks: dict[str, Any] = {
         "python": sys.version.split()[0],
         "database": str(settings.db_path),
@@ -48,7 +54,8 @@ def build_checks(settings: Settings, stored_line_group_id: str | None = None) ->
         "line_group_id_source": "env" if settings.line_group_id else ("webhook_storage" if stored_line_group_id else ""),
         "line_api_base_url": settings.line_api_base_url,
         "public_base_url": settings.public_base_url,
-        "line_image_delivery_ready": bool(settings.public_base_url),
+        "public_url_check": public_url_check,
+        "line_image_delivery_ready": bool(public_url_check.get("ok")),
         "auto_send": settings.auto_send,
         "top_paper_count": settings.top_paper_count,
         "pubmed_lookback_days": settings.pubmed_lookback_days,
@@ -161,7 +168,15 @@ def setup_items(checks: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "label": "Public image URL",
             "ok": bool(checks.get("line_image_delivery_ready")),
-            "detail": "Set SHOULDER_DIGEST_PUBLIC_BASE_URL for LINE image messages.",
+            "detail": (
+                f"Reachable: {checks.get('public_base_url')}."
+                if checks.get("line_image_delivery_ready")
+                else (
+                    str((checks.get("public_url_check") or {}).get("reason") or "Set SHOULDER_DIGEST_PUBLIC_BASE_URL.")
+                    if checks.get("public_base_url")
+                    else "Set SHOULDER_DIGEST_PUBLIC_BASE_URL and start ngrok."
+                )
+            ),
         },
     ]
 

@@ -10,7 +10,7 @@ from shoulder_digest.server import render_setup
 
 
 class FakePubMed:
-    def search_recent(self, run_date, retmax=80, lookback_days=1):
+    def search_recent(self, run_date, retmax=80, lookback_days=1, retstart=0):
         self.last_lookback = lookback_days
         return ["1", "2", "3"]
 
@@ -89,6 +89,11 @@ class AppFlowTests(unittest.TestCase):
             app.pubmed = FakePubMed()
             app.run_daily("2026-06-08", dry_run=True)
             app.storage.upsert_run("2026-06-08", "delivered", True)
+            app.storage._record_line_delivery(
+                "2026-06-08",
+                ["1"],
+                {"messages": [{"text": "https://pubmed.ncbi.nlm.nih.gov/1/"}]},
+            )
             result = app.run_daily("2026-06-08", dry_run=True)
             self.assertEqual(result["status"], "ready_for_approval")
             run = app.get_run("2026-06-08")
@@ -114,10 +119,18 @@ class AppFlowTests(unittest.TestCase):
                     "UPDATE runs SET image_url = ? WHERE run_date = ?",
                     ("https://example.com/test.png", "2026-06-08"),
                 )
+            run = app.get_run("2026-06-08")
+            pmid = run["papers"][0]["pmid"]
             app.storage.upsert_run("2026-06-08", "delivered", True)
+            app.storage._record_line_delivery(
+                "2026-06-08",
+                [pmid],
+                {"to": "C123", "messages": [{"text": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"}]},
+            )
             result = app.approve_send("2026-06-08", dry_run=False)
-            self.assertEqual(result["status"], "sent")
-            self.assertEqual(len(fake_line.calls), 1)
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["pmids"], [pmid])
+            self.assertEqual(len(fake_line.calls), 0)
 
     def test_render_setup_contains_status_rows(self):
         html = render_setup(

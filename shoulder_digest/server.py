@@ -17,7 +17,7 @@ from .diagnostics import build_checks
 from .pubmed import default_run_date
 
 
-def serve(settings: Settings, schedule: bool = False) -> None:
+def serve(settings: Settings, schedule: bool = True) -> None:
     app = ShoulderDigestApp(settings)
     sync_result = app._sync_public_base_url()
     if sync_result.get("ok"):
@@ -29,6 +29,7 @@ def serve(settings: Settings, schedule: bool = False) -> None:
         print(f"ngrok URL sync skipped: {sync_result.get('reason', 'unknown')}")
     if schedule:
         threading.Thread(target=_scheduler_loop, args=(app, settings.daily_time), daemon=True).start()
+        print(f"Daily scheduler enabled (after {settings.daily_time}, auto_send={settings.auto_send}).")
     handler = _make_handler(app, settings)
     server = ThreadingHTTPServer((settings.host, settings.port), handler)
     print(f"Serving shoulder digest at http://{settings.host}:{settings.port}/")
@@ -169,29 +170,52 @@ def _make_handler(app: ShoulderDigestApp, settings: Settings) -> type[BaseHTTPRe
 def _scheduler_loop(app: ShoulderDigestApp, daily_time: str) -> None:
     while True:
         try:
-            if should_run_scheduled_daily(app, daily_time):
-                today = date.today().isoformat()
-                app.run_daily(run_date=today, dry_run=False)
+            if run_scheduled_daily_if_needed(app, daily_time):
+                print(f"scheduled daily completed for {date.today().isoformat()}")
         except Exception as exc:
             print(f"scheduled run failed: {exc}")
         time.sleep(30)
 
 
-def should_run_scheduled_daily(app: ShoulderDigestApp, daily_time: str, now: datetime | None = None) -> bool:
+def is_past_daily_time(daily_time: str, now: datetime | None = None) -> bool:
     current = now or datetime.now()
     try:
         scheduled_hour, scheduled_minute = map(int, daily_time.split(":", 1))
     except ValueError:
         return False
     scheduled_today = current.replace(hour=scheduled_hour, minute=scheduled_minute, second=0, microsecond=0)
-    if current < scheduled_today:
+    return current >= scheduled_today
+
+
+def run_scheduled_daily_if_needed(app: ShoulderDigestApp, daily_time: str, now: datetime | None = None) -> bool:
+    if not is_past_daily_time(daily_time, now):
         return False
 
+    current = now or datetime.now()
+    today = current.date().isoformat()
+    existing = app.storage.get_run(today)
+    if existing and str(existing.get("status", "")) == "ready_for_approval" and app.settings.auto_send:
+        app.approve_send(today, dry_run=False)
+        return True
+
+    if should_run_scheduled_daily(app, daily_time, now):
+        app.run_daily(run_date=today, dry_run=False)
+        return True
+    return False
+
+
+def should_run_scheduled_daily(app: ShoulderDigestApp, daily_time: str, now: datetime | None = None) -> bool:
+    if not is_past_daily_time(daily_time, now):
+        return False
+
+    current = now or datetime.now()
     today = current.date().isoformat()
     existing = app.storage.get_run(today)
     if existing:
         status = str(existing.get("status", ""))
-        if status in {"ready_for_approval", "delivered", "no_candidates"}:
+        if status in {"ready_for_approval", "delivered"}:
+            return False
+        if status == "no_candidates":
             return False
     return True
 

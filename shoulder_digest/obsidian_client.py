@@ -23,6 +23,25 @@ def _yaml_list(items: list[str], indent: int = 0) -> str:
     return "\n".join(lines)
 
 
+_INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+_MULTI_SPACE = re.compile(r"\s+")
+
+
+def sanitize_note_stem(title: str, max_length: int = 80) -> str:
+    sanitized = _INVALID_FILENAME_CHARS.sub("", title)
+    sanitized = _MULTI_SPACE.sub(" ", sanitized).strip().strip(".")
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length].rstrip()
+    return sanitized
+
+
+def paper_display_title(paper: dict[str, Any]) -> str:
+    japanese_title = str(paper.get("japanese_title") or "").strip()
+    if japanese_title:
+        return japanese_title
+    return str(paper.get("title") or "Untitled").strip() or "Untitled"
+
+
 class ObsidianVaultWriter:
     def __init__(self, vault_path: Path, notes_dir: str = "PubMed肩関節"):
         self.vault_path = vault_path
@@ -41,6 +60,36 @@ class ObsidianVaultWriter:
     def note_path_for_run(self, run_date: str) -> Path:
         return self.notes_root() / f"{run_date}.md"
 
+    def note_stem_for_papers(self, papers: list[dict[str, Any]], run_date: str) -> str:
+        if not papers:
+            return run_date
+        stem = sanitize_note_stem(paper_display_title(papers[0]))
+        return stem or run_date
+
+    def note_path_for_digest(self, run_date: str, papers: list[dict[str, Any]]) -> Path:
+        stem = self.note_stem_for_papers(papers, run_date)
+        path = self.notes_root() / f"{stem}.md"
+        if path.exists():
+            pmid = str(papers[0].get("pmid") or "").strip() if papers else ""
+            if pmid:
+                path = self.notes_root() / f"{stem} ({pmid}).md"
+            else:
+                path = self.notes_root() / f"{stem} ({run_date}).md"
+        return path
+
+    def find_note_path(self, run_date: str) -> Path | None:
+        legacy = self.note_path_for_run(run_date)
+        if legacy.exists():
+            return legacy
+        root = self.notes_root()
+        if not root.exists():
+            return None
+        for path in sorted(root.glob("*.md")):
+            content = path.read_text(encoding="utf-8")
+            if re.search(rf"(?m)^run_date:\s*{re.escape(run_date)}\s*$", content):
+                return path
+        return None
+
     def save_digest(
         self,
         run_date: str,
@@ -54,13 +103,16 @@ class ObsidianVaultWriter:
         if not self.configured:
             return {"skipped": True, "reason": "OBSIDIAN_VAULT is not configured"}
 
-        note_path = self.note_path_for_run(run_date)
+        note_path = self.note_path_for_digest(run_date, papers)
+        note_stem = self.note_stem_for_papers(papers, run_date)
         image_ref = ""
         stored_image_path = ""
         if source_image_path:
             source = Path(source_image_path)
             if source.exists():
-                attachment_name = f"{run_date}-{source.name}"
+                pmid = str(papers[0].get("pmid") or "").strip() if papers else ""
+                prefix = pmid or note_stem
+                attachment_name = f"{prefix}-{source.name}"
                 target = self.attachments_dir() / attachment_name
                 image_ref = f"attachments/{attachment_name}"
                 stored_image_path = str(target)
@@ -95,9 +147,9 @@ class ObsidianVaultWriter:
         if not self.configured:
             return {"skipped": True, "reason": "OBSIDIAN_VAULT is not configured"}
 
-        note_path = self.note_path_for_run(run_date)
-        if not note_path.exists():
-            return {"skipped": True, "reason": f"note not found: {note_path}"}
+        note_path = self.find_note_path(run_date)
+        if note_path is None:
+            return {"skipped": True, "reason": f"note not found for run_date: {run_date}"}
 
         content = note_path.read_text(encoding="utf-8")
         updated = re.sub(
@@ -141,6 +193,7 @@ class ObsidianVaultWriter:
         status: str,
     ) -> str:
         pmids = [str(paper.get("pmid", "")) for paper in papers if paper.get("pmid")]
+        note_title = self._note_title(papers, run_date)
         frontmatter = [
             "---",
             f"run_date: {_yaml_scalar(run_date)}",
@@ -158,7 +211,7 @@ class ObsidianVaultWriter:
         sections = [
             "\n".join(frontmatter),
             "",
-            f"# 肩関節ダイジェスト {run_date}",
+            f"# {note_title}",
             "",
             "## 概要",
             digest_summary.strip() or "（要約なし）",
@@ -170,7 +223,7 @@ class ObsidianVaultWriter:
         if papers:
             sections.extend(["", "## 論文"])
             for index, paper in enumerate(papers, start=1):
-                title = paper.get("title") or "Untitled"
+                title = paper_display_title(paper)
                 pmid = paper.get("pmid") or ""
                 pubmed_url = paper.get("pubmed_url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
                 sections.extend(
@@ -201,3 +254,10 @@ class ObsidianVaultWriter:
                     sections.extend(["", "#### Abstract", abstract.strip()])
 
         return "\n".join(sections).strip() + "\n"
+
+    def _note_title(self, papers: list[dict[str, Any]], run_date: str) -> str:
+        if papers:
+            title = paper_display_title(papers[0])
+            if title and title != "Untitled":
+                return title
+        return f"肩関節ダイジェスト {run_date}"

@@ -17,10 +17,12 @@ def build_summary_prompt(run_date: str, papers: list[Paper]) -> str:
         "papers": [paper.to_ai_dict() for paper in papers],
     }
     return (
-        "あなたは肩関節領域に詳しい医療者向け編集者です。\n"
-        "以下のPubMed論文JSONだけを根拠に、病院・診療所・リハビリ現場で役立つ日本語ダイジェストを1本作成してください。\n"
-        "対象は医療の現場（診療、手術、リハビリ、外来/入院患者）に直接関係する内容に限定してください。\n"
-        "RCT、コホート、ガイドライン、診療成績、リハビリ、手術成績などを優先してください。\n"
+        "あなたは肩関節領域に詳しい理学療法士向け編集者です。\n"
+        "以下のPubMed論文JSONだけを根拠に、理学療法現場向けの日本語ダイジェストを1本作成してください。\n"
+        "優先テーマは、肩関節の解剖・基本構造・運動学・可動域、リハビリプログラム、"
+        "徒手・運動療法、機能評価、ADL/スポーツ復帰、保守的治療です。\n"
+        "手術成績や人工関節の話題は、リハビリや機能回復の観点がabstractにある場合のみ中心に据えてください。\n"
+        "RCT、コホート、SR/MA、ガイドライン、解剖レビュー、バイオメカニクス、可動域研究を扱えます。\n"
         "推測で効果量や結論を補わないでください。abstractにないことは書かないでください。\n"
         "返答はMarkdownなしのJSONのみです。\n"
         "JSON schema:\n"
@@ -31,8 +33,9 @@ def build_summary_prompt(run_date: str, papers: list[Paper]) -> str:
         "    {\n"
         '      "pmid": "string",\n'
         '      "title": "string",\n'
+        '      "japanese_title": "論文タイトルの自然な日本語訳",\n'
         '      "japanese_summary": "目的・方法・結果・臨床的意味を6-8文",\n'
-        '      "clinical_takeaway": "現場向けの一言",\n'
+        '      "clinical_takeaway": "理学療法現場向けの一言",\n'
         '      "topics": ["string"],\n'
         '      "evidence_type": "string"\n'
         "    }\n"
@@ -60,8 +63,8 @@ def build_image_prompt(digest: DigestResult) -> str:
     )
     return (
         "あなたは雑誌の特集ページを作るアートディレクター兼情報デザイナーです。\n"
-        "以下の「可視化したい情報」は、肩関節診療の現場向けに選ばれた論文1本です。\n"
-        "病院、診療所、リハビリ室で読む医療者向けに、1枚で要点が伝わるグラレコにしてください。\n"
+        "以下の「可視化したい情報」は、肩関節の解剖・機能・リハビリまたは運動学に関する1本です。\n"
+        "理学療法現場で読む人向けに、1枚で要点が伝わるグラレコにしてください。\n"
         "\n"
         "コンセプト：\n"
         "- 雑誌の見開き特集ページのような、洗練された図解グラレコ\n"
@@ -125,6 +128,7 @@ def summarize_with_codex(
         DigestPaper(
             pmid=str(item.get("pmid", "")),
             title=str(item.get("title", "")),
+            japanese_title=str(item.get("japanese_title", "")),
             japanese_summary=str(item.get("japanese_summary", "")),
             clinical_takeaway=str(item.get("clinical_takeaway", "")),
             topics=[str(topic) for topic in item.get("topics", [])],
@@ -186,6 +190,7 @@ def mock_digest(run_date: str, papers: list[Paper]) -> DigestResult:
             DigestPaper(
                 pmid=paper.pmid,
                 title=paper.title,
+                japanese_title=paper.title,
                 japanese_summary=(
                     f"{paper.title} の抄録に基づく要約です。研究の焦点は "
                     f"{', '.join(paper.topics[:3]) or '肩関節'} です。詳細はPubMed原文を確認してください。"

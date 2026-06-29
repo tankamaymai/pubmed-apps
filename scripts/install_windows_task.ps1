@@ -1,16 +1,17 @@
 param(
     [string]$TaskName = "ShoulderPubMedDigest",
     [string]$Time = "07:00",
-    [string]$Python = "python",
+    [string]$PowerShell = "powershell.exe",
     [string]$WorkingDirectory = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 
+$runScript = Join-Path $PSScriptRoot "run_daily_digest.ps1"
 $action = New-ScheduledTaskAction `
-    -Execute $Python `
-    -Argument "-m shoulder_digest run" `
+    -Execute $PowerShell `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runScript`"" `
     -WorkingDirectory $WorkingDirectory
 
 $trigger = New-ScheduledTaskTrigger -Daily -At $Time
@@ -22,7 +23,7 @@ $settings = New-ScheduledTaskSettingsSet `
 if ($DryRun) {
     Write-Host "Would register task '$TaskName'"
     Write-Host "WorkingDirectory: $WorkingDirectory"
-    Write-Host "Command: $Python -m shoulder_digest run"
+    Write-Host "Command: $PowerShell -File $runScript"
     Write-Host "Daily time: $Time"
     exit 0
 }

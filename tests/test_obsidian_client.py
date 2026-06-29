@@ -22,6 +22,7 @@ class ObsidianClientTests(unittest.TestCase):
                     {
                         "pmid": "123",
                         "title": "Rotator cuff study",
+                        "japanese_title": "肩腱板RCTの新規研究",
                         "journal": "J Shoulder",
                         "publication_date": "2026-06-10",
                         "pubmed_url": "https://pubmed.ncbi.nlm.nih.gov/123/",
@@ -35,13 +36,14 @@ class ObsidianClientTests(unittest.TestCase):
                 source_image_path=str(source_image),
             )
 
-            note_path = vault / "PubMed肩関節" / "2026-06-11.md"
-            image_path = vault / "PubMed肩関節" / "attachments" / "2026-06-11-sample.png"
+            note_path = vault / "PubMed肩関節" / "肩腱板RCTの新規研究.md"
+            image_path = vault / "PubMed肩関節" / "attachments" / "123-sample.png"
             self.assertTrue(note_path.exists())
             self.assertTrue(image_path.exists())
             content = note_path.read_text(encoding="utf-8")
             self.assertIn("run_date: 2026-06-11", content)
-            self.assertIn("![[attachments/2026-06-11-sample.png]]", content)
+            self.assertIn("# 肩腱板RCTの新規研究", content)
+            self.assertIn("![[attachments/123-sample.png]]", content)
             self.assertIn("肩腱板のRCT研究", content)
             self.assertEqual(result["note_path"], str(note_path))
 
@@ -53,10 +55,10 @@ class ObsidianClientTests(unittest.TestCase):
                 "2026-06-11",
                 "summary",
                 "",
-                [{"pmid": "123", "title": "Study"}],
+                [{"pmid": "123", "title": "Study", "japanese_title": "研究タイトル"}],
             )
             writer.mark_delivered("2026-06-11")
-            content = (vault / "PubMed肩関節" / "2026-06-11.md").read_text(encoding="utf-8")
+            content = (vault / "PubMed肩関節" / "研究タイトル.md").read_text(encoding="utf-8")
             self.assertIn("status: delivered", content)
 
     def test_validate_vault_reports_missing_path(self):

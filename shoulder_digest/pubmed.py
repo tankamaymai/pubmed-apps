@@ -22,8 +22,12 @@ SHOULDER_QUERY = (
     '("labrum"[Title/Abstract] AND shoulder[Title/Abstract]) OR '
     '("labral"[Title/Abstract] AND shoulder[Title/Abstract]) OR '
     '"adhesive capsulitis"[Title/Abstract] OR "frozen shoulder"[Title/Abstract] OR '
-    'scapular[Title/Abstract] OR acromioclavicular[Title/Abstract] OR '
-    '"shoulder rehabilitation"[Title/Abstract])'
+    'scapular[Title/Abstract] OR scapulothoracic[Title/Abstract] OR '
+    'acromioclavicular[Title/Abstract] OR '
+    '"shoulder rehabilitation"[Title/Abstract] OR '
+    'physiotherapy[Title/Abstract] OR "physical therapy"[Title/Abstract] OR '
+    '"range of motion"[Title/Abstract] OR kinematics[Title/Abstract] OR '
+    'biomechanics[Title/Abstract] OR anatomy[Title/Abstract])'
 )
 
 NON_SHOULDER_JOINT_FILTER = (
@@ -41,60 +45,50 @@ NON_SHOULDER_JOINT_FILTER = (
     ")"
 )
 
-CLINICAL_FILTER = (
-    '(humans[MeSH Terms] NOT (animals[MeSH Terms] NOT humans[MeSH Terms])) AND ('
-    '"Randomized Controlled Trial"[Publication Type] OR '
-    '"Clinical Trial"[Publication Type] OR '
-    '"Controlled Clinical Trial"[Publication Type] OR '
-    '"Multicenter Study"[Publication Type] OR '
-    '"Observational Study"[Publication Type] OR '
-    '"Systematic Review"[Publication Type] OR '
-    '"Meta-Analysis"[Publication Type] OR '
-    '"Practice Guideline"[Publication Type] OR '
-    '"Physical Therapy Modalities"[MeSH Terms] OR '
-    '"Rehabilitation"[MeSH Terms] OR '
-    '"Orthopedic Procedures"[MeSH Terms] OR '
-    '"Treatment Outcome"[MeSH Terms] OR '
-    '"Postoperative Care"[MeSH Terms] OR '
-    'rehabilitation[Title/Abstract] OR '
-    '"physical therapy"[Title/Abstract] OR '
-    '"shoulder surgery"[Title/Abstract] OR '
-    'postoperative[Title/Abstract] OR '
-    'patients[Title/Abstract] OR '
-    'hospital[Title/Abstract] OR '
-    'outpatient[Title/Abstract]'
-    ') AND NOT ('
-    'occupational[Title/Abstract] OR '
-    'ergonomics[Title/Abstract] OR '
-    'workplace[Title/Abstract] OR '
+OCCUPATIONAL_EXCLUDE_FILTER = (
+    "NOT ("
+    "occupational[Title/Abstract] OR "
+    "ergonomics[Title/Abstract] OR "
+    "workplace[Title/Abstract] OR "
     '"industrial workers"[Title/Abstract] OR '
-    'exoskeleton[Title/Abstract] OR '
-    'biomechanical[Title/Abstract] OR '
-    'biomechanics[Title/Abstract] OR '
-    'cadaveric[Title/Abstract] OR '
-    '"in vitro"[Title/Abstract] OR '
-    '"finite element"[Title/Abstract]'
-    ')'
+    "exoskeleton[Title/Abstract] OR "
+    "chiropractor[Title/Abstract]"
+    ")"
 )
 
-SHOULDER_CLINICAL_QUERY = f"({SHOULDER_QUERY}) AND {CLINICAL_FILTER} AND {NON_SHOULDER_JOINT_FILTER}"
+HUMAN_FILTER = (
+    "(humans[MeSH Terms] NOT (animals[MeSH Terms] NOT humans[MeSH Terms]))"
+)
+
+SHOULDER_CONTENT_QUERY = f"({SHOULDER_QUERY}) AND {HUMAN_FILTER} AND {NON_SHOULDER_JOINT_FILTER}"
 
 TOPIC_WEIGHTS = {
     "rotator cuff": 5,
     "supraspinatus": 3,
     "glenohumeral": 4,
-    "arthroplasty": 4,
-    "reverse shoulder": 5,
+    "arthroplasty": 1,
+    "reverse shoulder": 1,
     "shoulder instability": 4,
     "labrum": 3,
     "labral": 3,
-    "adhesive capsulitis": 4,
-    "frozen shoulder": 4,
-    "rehabilitation": 3,
-    "physical therapy": 3,
-    "scapular": 2,
-    "acromioclavicular": 2,
+    "adhesive capsulitis": 5,
+    "frozen shoulder": 5,
+    "rehabilitation": 6,
+    "physiotherapy": 6,
+    "physical therapy": 6,
+    "exercise therapy": 5,
+    "manual therapy": 4,
+    "proprioception": 4,
+    "motor control": 4,
+    "scapular": 4,
+    "scapulothoracic": 4,
+    "acromioclavicular": 3,
     "shoulder": 2,
+    "anatomy": 5,
+    "kinematics": 5,
+    "biomechanics": 4,
+    "range of motion": 5,
+    "shoulder function": 5,
 }
 
 ARTICLE_TYPE_WEIGHTS = {
@@ -121,22 +115,59 @@ LOW_EVIDENCE_ARTICLE_TYPES = {
     "Retraction of Publication",
 }
 
-CLINICAL_TEXT_WEIGHTS = {
-    "randomized controlled trial": 4,
-    "randomised controlled trial": 4,
-    "prospective cohort": 3,
-    "retrospective cohort": 3,
-    "clinical outcomes": 3,
-    "functional outcomes": 3,
+REHAB_TEXT_WEIGHTS = {
+    "rehabilitation protocol": 5,
+    "rehabilitation program": 5,
+    "rehabilitation programme": 5,
+    "physical therapy": 5,
+    "physiotherapy": 5,
+    "physiotherapist": 4,
+    "physical therapist": 4,
+    "exercise therapy": 5,
+    "therapeutic exercise": 5,
+    "home exercise": 4,
+    "stretching": 3,
+    "strengthening": 3,
+    "manual therapy": 4,
+    "proprioceptive": 4,
+    "proprioception": 4,
+    "motor control": 4,
+    "scapular dyskinesis": 4,
+    "scapular stabilization": 4,
+    "scapular stabilisation": 4,
+    "range of motion": 4,
+    "functional outcome": 4,
     "patient-reported": 3,
-    "patients underwent": 3,
-    "rehabilitation protocol": 4,
-    "physical therapy": 4,
-    "postoperative": 3,
-    "surgical treatment": 3,
-    "conservative treatment": 3,
-    "outpatient": 2,
-    "hospital": 2,
+    "activities of daily living": 3,
+    "conservative treatment": 4,
+    "nonoperative": 3,
+    "non-operative": 3,
+}
+
+SURGICAL_TEXT_PENALTIES = {
+    "reverse total shoulder arthroplasty": 4,
+    "total shoulder arthroplasty": 4,
+    "shoulder arthroplasty": 3,
+    "shoulder replacement": 3,
+    "hemiarthroplasty": 3,
+    "reverse shoulder": 2,
+    "postoperative rehabilitation": -2,
+}
+
+FOUNDATIONAL_TEXT_WEIGHTS = {
+    "anatomy": 4,
+    "anatomic": 4,
+    "anatomical": 4,
+    "kinesiology": 4,
+    "kinematics": 4,
+    "biomechanics": 3,
+    "range of motion": 3,
+    "shoulder function": 4,
+    "scapulothoracic": 3,
+    "muscle activation": 3,
+    "glenohumeral joint": 3,
+    "shoulder mechanics": 4,
+    "muscular balance": 3,
 }
 
 NON_CLINICAL_TEXT_PENALTIES = {
@@ -149,9 +180,6 @@ NON_CLINICAL_TEXT_PENALTIES = {
     "cadaver study": 8,
     "finite element analysis": 8,
     "biomechanical analysis": 6,
-    "biomechanics": 6,
-    "anatomic study": 6,
-    "anatomical study": 6,
     "exoskeleton": 10,
     "ergonomics": 10,
     "workplace": 8,
@@ -170,6 +198,20 @@ HARD_NON_CLINICAL_TEXT_TERMS = frozenset(
         "finite element analysis",
         "exoskeleton",
         "drilling performance",
+        "chiropractor",
+    }
+)
+
+FOUNDATIONAL_HARD_EXCLUDE_TERMS = frozenset(
+    {
+        "in vitro",
+        "animal model",
+        "mouse model",
+        "rat model",
+        "finite element analysis",
+        "exoskeleton",
+        "drilling performance",
+        "chiropractor",
     }
 )
 
@@ -186,26 +228,76 @@ STRONG_CLINICAL_ARTICLE_TYPES = {
     "Evaluation Study",
 }
 
-HEALTHCARE_PRACTICE_PATTERN = re.compile(
+REHAB_PRACTICE_PATTERN = re.compile(
     r"\b("
-    r"patient[s]?|"
-    r"hospital|"
-    r"outpatient|"
-    r"clinic|"
     r"rehabilitation|"
+    r"physiotherapy|"
     r"physical therapy|"
-    r"surgery|"
-    r"surgical|"
-    r"arthroscopic|"
-    r"postoperative|"
+    r"physical therapist|"
+    r"physiotherapist|"
+    r"exercise therapy|"
+    r"therapeutic exercise|"
+    r"home exercise|"
+    r"range of motion|"
+    r"stretching|"
+    r"strengthening|"
+    r"manual therapy|"
+    r"proprioception|"
+    r"proprioceptive|"
+    r"motor control|"
+    r"scapular dyskinesis|"
+    r"scapular stabilization|"
+    r"scapular stabilisation|"
+    r"functional outcome|"
+    r"patient-reported|"
+    r"activities of daily living|"
     r"conservative treatment|"
-    r"operative treatment|"
-    r"shoulder replacement|"
-    r"rotator cuff repair|"
-    r"shoulder instability|"
+    r"nonoperative|"
+    r"non-operative|"
+    r"shoulder pain|"
     r"adhesive capsulitis|"
     r"frozen shoulder|"
-    r"shoulder pain"
+    r"rotator cuff|"
+    r"shoulder instability"
+    r")\b",
+    re.IGNORECASE,
+)
+
+ARTHROPLASTY_PATTERN = re.compile(
+    r"\b("
+    r"reverse total shoulder arthroplasty|"
+    r"total shoulder arthroplasty|"
+    r"shoulder arthroplasty|"
+    r"shoulder replacement|"
+    r"hemiarthroplasty|"
+    r"reverse shoulder arthroplasty|"
+    r"\brtsa\b|"
+    r"\btsa\b"
+    r")\b",
+    re.IGNORECASE,
+)
+
+ARTHROPLASTY_MAX_PER_MONTH = 1
+
+FOUNDATIONAL_SHOULDER_PATTERN = re.compile(
+    r"\b("
+    r"anatomy|"
+    r"anatomic|"
+    r"anatomical|"
+    r"kinesiology|"
+    r"kinematics|"
+    r"biomechanics|"
+    r"range of motion|"
+    r"muscle strength|"
+    r"shoulder function|"
+    r"scapulothoracic|"
+    r"shoulder mechanics|"
+    r"shoulder movement|"
+    r"muscle activation|"
+    r"glenohumeral joint|"
+    r"morphology|"
+    r"muscular balance|"
+    r"structural"
     r")\b",
     re.IGNORECASE,
 )
@@ -271,13 +363,20 @@ class PubMedClient:
         self.email = email
         self.tool = tool
 
-    def search_recent(self, run_date: str, retmax: int = 80, lookback_days: int = 1) -> list[str]:
+    def search_recent(
+        self,
+        run_date: str,
+        retmax: int = 80,
+        lookback_days: int = 1,
+        retstart: int = 0,
+    ) -> list[str]:
         mindate, maxdate = pubmed_date_range(run_date, lookback_days)
         params = {
             "db": "pubmed",
             "term": build_pubmed_search_query(),
             "retmode": "json",
             "retmax": str(retmax),
+            "retstart": str(max(0, retstart)),
             "sort": "pub+date",
             "datetype": "edat",
             "mindate": mindate,
@@ -321,7 +420,7 @@ def _format_pubmed_date(value: str) -> str:
 
 
 def build_pubmed_search_query() -> str:
-    return SHOULDER_CLINICAL_QUERY
+    return SHOULDER_CONTENT_QUERY
 
 
 def pubmed_date_range(run_date: str, lookback_days: int = 1) -> tuple[str, str]:
@@ -445,7 +544,15 @@ def score_paper(paper: Paper) -> Paper:
                 score += weight
                 if not paper.evidence_type and weight > 0:
                     paper.evidence_type = key
-    for phrase, weight in CLINICAL_TEXT_WEIGHTS.items():
+    for phrase, weight in REHAB_TEXT_WEIGHTS.items():
+        if phrase in haystack:
+            score += weight
+    for phrase, penalty in SURGICAL_TEXT_PENALTIES.items():
+        if phrase in haystack:
+            score -= penalty
+    if is_surgery_only_arthroplasty(paper):
+        score -= 6
+    for phrase, weight in FOUNDATIONAL_TEXT_WEIGHTS.items():
         if phrase in haystack:
             score += weight
     for phrase, penalty in NON_CLINICAL_TEXT_PENALTIES.items():
@@ -453,8 +560,10 @@ def score_paper(paper: Paper) -> Paper:
             score -= penalty
     if re.search(r"\b(randomi[sz]ed|trial|cohort|registry|meta-analysis|systematic review)\b", haystack):
         score += 3
-    if re.search(r"\b(patient[s]?|rehabilitation|outcomes?|operative|arthroscopic)\b", haystack):
-        score += 2
+    if REHAB_PRACTICE_PATTERN.search(haystack):
+        score += 4
+    elif re.search(r"\b(patient[s]?|rehabilitation|outcomes?)\b", haystack):
+        score += 1
     if len(paper.abstract) >= 500:
         score += 1
     paper.topics = topics
@@ -463,6 +572,9 @@ def score_paper(paper: Paper) -> Paper:
         paper.evidence_type = paper.article_types[0] if paper.article_types else "Article"
     return paper
 
+
+SEARCH_PAGE_SIZE = 200
+SEARCH_MAX_PAGES = 10
 
 LOOKBACK_MILESTONES = (365, 730, 1825)
 
@@ -484,7 +596,7 @@ def lookback_search_steps(lookback_days: int, max_lookback_days: int) -> list[in
 
 
 def search_retmax_for_lookback(lookback_days: int) -> int:
-    return min(200, max(80, lookback_days * 2))
+    return min(SEARCH_PAGE_SIZE, max(80, lookback_days * 2))
 
 
 def search_top_papers(
@@ -495,57 +607,141 @@ def search_top_papers(
     limit: int = 1,
     lookback_days: int = 90,
     max_lookback_days: int = 1825,
+    arthroplasty_deliveries_this_month: int = 0,
+    max_arthroplasty_per_month: int = ARTHROPLASTY_MAX_PER_MONTH,
 ) -> tuple[list[Paper], int, list[str]]:
     last_pmids: list[str] = []
     last_lookback = lookback_days
+    arthroplasty_allowed = arthroplasty_deliveries_this_month < max_arthroplasty_per_month
     for lookback in lookback_search_steps(lookback_days, max_lookback_days):
         last_lookback = lookback
-        last_pmids = client.search_recent(
-            run_date,
-            retmax=search_retmax_for_lookback(lookback),
-            lookback_days=lookback,
-        )
-        papers = client.fetch_details(last_pmids)
-        selected = select_top_papers(papers, seen_pmids, limit=limit)
-        if selected:
-            return selected, lookback, last_pmids
+        page_size = search_retmax_for_lookback(lookback)
+        for page in range(SEARCH_MAX_PAGES):
+            retstart = page * page_size
+            last_pmids = client.search_recent(
+                run_date,
+                retmax=page_size,
+                lookback_days=lookback,
+                retstart=retstart,
+            )
+            if not last_pmids:
+                break
+            papers = client.fetch_details(last_pmids)
+            selected = select_top_papers(
+                papers,
+                seen_pmids,
+                limit=limit,
+                arthroplasty_allowed=arthroplasty_allowed,
+            )
+            if selected:
+                return selected, lookback, last_pmids
     return [], last_lookback, last_pmids
 
 
-def select_top_papers(papers: list[Paper], seen_pmids: set[str], limit: int = 1) -> list[Paper]:
-    candidates = [
-        paper
-        for paper in papers
-        if paper.pmid not in seen_pmids
-        and len(paper.abstract.strip()) >= 80
-        and paper.relevance_score > 0
-        and is_shoulder_focused(paper)
-        and is_clinically_oriented(paper)
-    ]
-    return sorted(candidates, key=lambda paper: (paper.relevance_score, paper.publication_date, paper.pmid), reverse=True)[
+def select_top_papers(
+    papers: list[Paper],
+    seen_pmids: set[str],
+    limit: int = 1,
+    *,
+    arthroplasty_allowed: bool = True,
+) -> list[Paper]:
+    def base_filters(paper: Paper) -> bool:
+        if not arthroplasty_allowed and is_arthroplasty_paper(paper):
+            return False
+        return (
+            paper.pmid not in seen_pmids
+            and len(paper.abstract.strip()) >= 80
+            and paper.relevance_score > 0
+            and is_shoulder_focused(paper)
+        )
+
+    strict = [paper for paper in papers if base_filters(paper) and is_digest_worthy(paper)]
+    if strict:
+        return _top_ranked(strict, limit)
+
+    relaxed = [paper for paper in papers if base_filters(paper) and is_digest_worthy_fallback(paper)]
+    return _top_ranked(relaxed, limit)
+
+
+def _top_ranked(papers: list[Paper], limit: int) -> list[Paper]:
+    return sorted(papers, key=lambda paper: (paper.relevance_score, paper.publication_date, paper.pmid), reverse=True)[
         :limit
     ]
+
+
+def is_digest_worthy(paper: Paper) -> bool:
+    return is_clinically_oriented(paper) or is_foundational_shoulder_content(paper)
+
+
+def is_digest_worthy_fallback(paper: Paper) -> bool:
+    return is_clinically_relevant_fallback(paper) or is_foundational_shoulder_content(paper)
+
+
+def is_foundational_shoulder_content(paper: Paper) -> bool:
+    if any(article_type in LOW_EVIDENCE_ARTICLE_TYPES for article_type in paper.article_types):
+        return False
+    if not is_shoulder_focused(paper):
+        return False
+    haystack = f"{paper.title}\n{paper.abstract}".lower()
+    if any(term in haystack for term in FOUNDATIONAL_HARD_EXCLUDE_TERMS):
+        return False
+    return bool(FOUNDATIONAL_SHOULDER_PATTERN.search(haystack))
+
+
+def has_rehab_focus(haystack: str) -> bool:
+    return bool(REHAB_PRACTICE_PATTERN.search(haystack))
+
+
+def is_surgery_only_arthroplasty(paper: Paper) -> bool:
+    haystack = f"{paper.title}\n{paper.abstract}".lower()
+    return bool(ARTHROPLASTY_PATTERN.search(haystack)) and not has_rehab_focus(haystack)
+
+
+def is_arthroplasty_paper(paper: Paper) -> bool:
+    haystack = f"{paper.title}\n{paper.abstract}".lower()
+    return bool(ARTHROPLASTY_PATTERN.search(haystack))
+
+
+def is_arthroplasty_text(text: str) -> bool:
+    return bool(ARTHROPLASTY_PATTERN.search(text.lower()))
+
+
+def is_clinically_relevant_fallback(paper: Paper) -> bool:
+    if any(article_type in LOW_EVIDENCE_ARTICLE_TYPES for article_type in paper.article_types):
+        return False
+    haystack = f"{paper.title}\n{paper.abstract}".lower()
+    if any(term in haystack for term in HARD_NON_CLINICAL_TEXT_TERMS):
+        return False
+    if any(term in haystack for term in ("biomechanical analysis", "kinematic assessment", "chiropractor")):
+        return False
+    if is_surgery_only_arthroplasty(paper):
+        return False
+    return has_rehab_focus(haystack)
 
 
 def is_clinically_oriented(paper: Paper) -> bool:
     if any(article_type in LOW_EVIDENCE_ARTICLE_TYPES for article_type in paper.article_types):
         return False
     haystack = f"{paper.title}\n{paper.abstract}".lower()
-    has_strong_type = any(article_type in STRONG_CLINICAL_ARTICLE_TYPES for article_type in paper.article_types)
     if any(term in haystack for term in HARD_NON_CLINICAL_TEXT_TERMS):
         return False
+    if is_surgery_only_arthroplasty(paper):
+        return False
+    if has_rehab_focus(haystack):
+        return True
+    if is_foundational_shoulder_content(paper):
+        return True
+
+    has_strong_type = any(article_type in STRONG_CLINICAL_ARTICLE_TYPES for article_type in paper.article_types)
     if not has_strong_type and any(term in haystack for term in NON_CLINICAL_TEXT_PENALTIES):
         return False
-    if not has_strong_type and not HEALTHCARE_PRACTICE_PATTERN.search(haystack):
-        return False
-
-    if has_strong_type:
+    if has_strong_type and is_shoulder_focused(paper):
         return True
     if any(article_type.lower() == "case reports" for article_type in paper.article_types):
-        return paper.relevance_score >= 8
+        return paper.relevance_score >= 8 and has_rehab_focus(haystack)
     return bool(
         re.search(
-            r"\b(patient[s]?|rehabilitation|physical therapy|outcomes?|randomi[sz]ed|prospective|retrospective|operative|arthroscopic|postoperative)\b",
+            r"\b(rehabilitation|physical therapy|physiotherapy|range of motion|exercise|shoulder pain)\b",
             haystack,
         )
     )

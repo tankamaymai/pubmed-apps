@@ -37,7 +37,8 @@ class Paper:
 class DigestPaper:
     pmid: str
     title: str
-    japanese_summary: str
+    japanese_title: str = ""
+    japanese_summary: str = ""
     clinical_takeaway: str = ""
     topics: list[str] = field(default_factory=list)
     evidence_type: str = ""
@@ -60,6 +61,7 @@ class DigestResult:
                 {
                     "pmid": paper.pmid,
                     "title": paper.title,
+                    "japanese_title": paper.japanese_title,
                     "japanese_summary": paper.japanese_summary,
                     "clinical_takeaway": paper.clinical_takeaway,
                     "topics": paper.topics,

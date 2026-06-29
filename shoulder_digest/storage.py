@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from .models import DigestResult, Paper, utc_now_iso
+from .pubmed import is_arthroplasty_text
+
+PMID_PATTERN = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", re.IGNORECASE)
 
 
 class Storage:
@@ -78,22 +82,126 @@ class Storage:
                     delivered_at TEXT NOT NULL,
                     run_date TEXT NOT NULL DEFAULT ''
                 );
+
+                CREATE TABLE IF NOT EXISTS line_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_date TEXT NOT NULL,
+                    pmid TEXT NOT NULL,
+                    delivered_at TEXT NOT NULL,
+                    line_payload TEXT NOT NULL DEFAULT '',
+                    UNIQUE(pmid)
+                );
                 """
             )
             try:
                 conn.execute("ALTER TABLE delivered_pmids ADD COLUMN run_date TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at, run_date)
-                SELECT p.pmid, r.updated_at, p.run_date
-                FROM papers p
-                JOIN runs r ON r.run_date = p.run_date
-                WHERE p.status = 'delivered' OR r.status = 'delivered'
-                """
-            )
             self._backfill_delivered_run_dates(conn)
+            conn.execute("DELETE FROM line_deliveries WHERE pmid GLOB '????-??-??'")
+            self._backfill_delivered_pmids_from_history(conn)
+            self._sync_delivered_pmids_to_line_history(conn)
+
+    @staticmethod
+    def extract_pmids_from_text(text: str) -> list[str]:
+        if not text:
+            return []
+        return list(dict.fromkeys(PMID_PATTERN.findall(text)))
+
+    @classmethod
+    def extract_pmids_from_run(cls, run: dict[str, Any]) -> list[str]:
+        pmids: list[str] = []
+        for paper in run.get("papers", []):
+            pmid = str(paper.get("pmid", "")).strip()
+            if pmid:
+                pmids.append(pmid)
+        if pmids:
+            return list(dict.fromkeys(pmids))
+
+        raw_ai_text = str(run.get("raw_ai_text", ""))
+        if raw_ai_text:
+            try:
+                payload = json.loads(raw_ai_text)
+            except json.JSONDecodeError:
+                pmids.extend(cls.extract_pmids_from_text(raw_ai_text))
+            else:
+                for paper in payload.get("papers", []):
+                    pmid = str(paper.get("pmid", "")).strip()
+                    if pmid:
+                        pmids.append(pmid)
+        line_payload = str(run.get("line_payload", ""))
+        if line_payload:
+            try:
+                payload = json.loads(line_payload)
+            except json.JSONDecodeError:
+                pmids.extend(cls.extract_pmids_from_text(line_payload))
+            else:
+                pmids.extend(cls.extract_pmids_from_text(json.dumps(payload, ensure_ascii=False)))
+        return list(dict.fromkeys(pmids))
+
+    def _backfill_delivered_pmids_from_history(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            "SELECT run_date, line_payload, raw_ai_text, updated_at FROM runs "
+            "WHERE line_payload != '' OR raw_ai_text != ''"
+        ).fetchall()
+        for row in rows:
+            pmids = self.extract_pmids_from_run(dict(row))
+            if not pmids:
+                continue
+            delivered_at = row["updated_at"] or utc_now_iso()
+            for pmid in pmids:
+                conn.execute(
+                    """
+                    INSERT INTO delivered_pmids(pmid, delivered_at, run_date)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(pmid) DO NOTHING
+                    """,
+                    (pmid, delivered_at, row["run_date"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO line_deliveries(run_date, pmid, delivered_at, line_payload)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(pmid) DO NOTHING
+                    """,
+                    (row["run_date"], pmid, delivered_at, row["line_payload"] or ""),
+                )
+
+    def _sync_delivered_pmids_to_line_history(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "DELETE FROM delivered_pmids WHERE pmid NOT IN (SELECT pmid FROM line_deliveries)"
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO delivered_pmids(pmid, delivered_at, run_date)
+            SELECT pmid, delivered_at, run_date FROM line_deliveries
+            """
+        )
+
+    def _record_line_delivery(self, run_date: str, pmids: list[str], payload: dict[str, Any]) -> None:
+        if not pmids:
+            return
+        now = utc_now_iso()
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        with self.session() as conn:
+            for pmid in pmids:
+                if not pmid:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO line_deliveries(run_date, pmid, delivered_at, line_payload)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(pmid) DO NOTHING
+                    """,
+                    (run_date, pmid, now, payload_text),
+                )
+        self.mark_pmids_delivered(pmids, run_date)
+
+    def already_delivered_pmids(self, pmids: list[str]) -> list[str]:
+        if not pmids:
+            return []
+        known = self.known_pmids()
+        return [pmid for pmid in pmids if pmid in known]
 
     def _backfill_delivered_run_dates(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
@@ -129,30 +237,10 @@ class Storage:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
 
-    def known_pmids(self, exclude_run_date: str = "") -> set[str]:
+    def known_pmids(self) -> set[str]:
         with self.session() as conn:
-            if exclude_run_date:
-                rows = conn.execute(
-                    """
-                    SELECT pmid FROM delivered_pmids
-                    WHERE run_date = '' OR run_date IS NULL OR run_date != ?
-                    """,
-                    (exclude_run_date,),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT pmid FROM delivered_pmids").fetchall()
-        known = {row["pmid"] for row in rows}
-        if exclude_run_date:
-            with self.session() as conn:
-                exempt = {
-                    row["pmid"]
-                    for row in conn.execute(
-                        "SELECT pmid FROM papers WHERE run_date = ?",
-                        (exclude_run_date,),
-                    ).fetchall()
-                }
-            known -= exempt
-        return known
+            rows = conn.execute("SELECT pmid FROM line_deliveries").fetchall()
+        return {row["pmid"] for row in rows}
 
     def mark_pmids_delivered(self, pmids: list[str], run_date: str = "") -> None:
         now = utc_now_iso()
@@ -169,6 +257,44 @@ class Storage:
                         """,
                         (pmid, now, run_date),
                     )
+
+    def arthroplasty_deliveries_in_month(self, run_date: str) -> int:
+        month_prefix = run_date[:7]
+        with self.session() as conn:
+            run_dates = [
+                row["run_date"]
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT run_date FROM delivered_pmids
+                    WHERE run_date LIKE ? AND run_date != ''
+                    """,
+                    (f"{month_prefix}%",),
+                ).fetchall()
+            ]
+        return sum(1 for delivered_run_date in run_dates if self._run_was_arthroplasty_delivery(delivered_run_date))
+
+    def _run_was_arthroplasty_delivery(self, run_date: str) -> bool:
+        with self.session() as conn:
+            papers = conn.execute(
+                "SELECT title, abstract FROM papers WHERE run_date = ?",
+                (run_date,),
+            ).fetchall()
+            if papers:
+                return any(
+                    is_arthroplasty_text(f"{row['title']}\n{row['abstract'] or ''}") for row in papers
+                )
+            run = conn.execute("SELECT raw_ai_text FROM runs WHERE run_date = ?", (run_date,)).fetchone()
+        if not run or not run["raw_ai_text"]:
+            return False
+        try:
+            payload = json.loads(run["raw_ai_text"])
+        except json.JSONDecodeError:
+            return is_arthroplasty_text(run["raw_ai_text"])
+        for paper in payload.get("papers", []):
+            text = f"{paper.get('title', '')}\n{paper.get('japanese_summary', '')}"
+            if is_arthroplasty_text(text):
+                return True
+        return is_arthroplasty_text(str(payload.get("digest_summary", "")))
 
     def upsert_run(self, run_date: str, status: str, dry_run: bool, error: str = "") -> None:
         now = utc_now_iso()
@@ -262,7 +388,7 @@ class Storage:
                 ),
             )
             for paper in digest.papers:
-                conn.execute(
+                cur = conn.execute(
                     """
                     UPDATE papers SET
                         japanese_summary = ?,
@@ -282,6 +408,35 @@ class Storage:
                         paper.pmid,
                     ),
                 )
+                if cur.rowcount == 0:
+                    conn.execute(
+                        """
+                        INSERT INTO papers(
+                            run_date, pmid, title, abstract, journal, publication_date,
+                            pubmed_url, article_types, topics, relevance_score, evidence_type,
+                            japanese_summary, clinical_takeaway, status
+                        )
+                        VALUES(?, ?, ?, '', '', '', ?, '[]', ?, 0, ?, ?, ?, ?)
+                        """,
+                        (
+                            digest.run_date,
+                            paper.pmid,
+                            paper.title,
+                            f"https://pubmed.ncbi.nlm.nih.gov/{paper.pmid}/",
+                            json.dumps(paper.topics, ensure_ascii=False),
+                            paper.evidence_type,
+                            paper.japanese_summary,
+                            paper.clinical_takeaway,
+                            "summarized",
+                        ),
+                    )
+            digest_pmids = [paper.pmid for paper in digest.papers if paper.pmid]
+            if digest_pmids:
+                placeholders = ",".join("?" for _ in digest_pmids)
+                conn.execute(
+                    f"DELETE FROM papers WHERE run_date = ? AND pmid NOT IN ({placeholders})",
+                    (digest.run_date, *digest_pmids),
+                )
 
     def mark_notion_page(self, run_date: str, pmid: str, page_id: str) -> None:
         with self.session() as conn:
@@ -299,7 +454,6 @@ class Storage:
 
     def save_line_payload(self, run_date: str, payload: dict[str, Any], delivered: bool) -> None:
         status = "delivered" if delivered else "ready_for_approval"
-        delivered_pmids: list[str] = []
         with self.session() as conn:
             conn.execute(
                 "UPDATE runs SET line_payload = ?, status = ?, updated_at = ? WHERE run_date = ?",
@@ -307,12 +461,10 @@ class Storage:
             )
             if delivered:
                 conn.execute("UPDATE papers SET status = ? WHERE run_date = ?", ("delivered", run_date))
-                delivered_pmids = [
-                    row["pmid"]
-                    for row in conn.execute("SELECT pmid FROM papers WHERE run_date = ?", (run_date,)).fetchall()
-                ]
         if delivered:
-            self.mark_pmids_delivered(delivered_pmids, run_date)
+            run = self.get_run(run_date) or {}
+            delivered_pmids = self.extract_pmids_from_run(run)
+            self._record_line_delivery(run_date, delivered_pmids, payload)
 
     def mark_error(self, run_date: str, error: str) -> None:
         with self.session() as conn:
@@ -331,8 +483,42 @@ class Storage:
                 (run_date,),
             ).fetchall()
         data = dict(run)
-        data["papers"] = [self._paper_row_to_dict(row) for row in papers]
+        db_papers = {str(row["pmid"]): self._paper_row_to_dict(row) for row in papers}
+        raw_papers = self._papers_from_raw_ai(str(data.get("raw_ai_text", "")))
+        if raw_papers:
+            merged: list[dict[str, Any]] = []
+            for raw_paper in raw_papers:
+                pmid = str(raw_paper.get("pmid", "")).strip()
+                base = db_papers.get(pmid, {})
+                merged.append({**base, **raw_paper})
+            data["papers"] = merged
+        else:
+            data["papers"] = list(db_papers.values())
         return data
+
+    @staticmethod
+    def _papers_from_raw_ai(raw_ai_text: str) -> list[dict[str, Any]]:
+        if not raw_ai_text:
+            return []
+        try:
+            payload = json.loads(raw_ai_text)
+        except json.JSONDecodeError:
+            return []
+        papers: list[dict[str, Any]] = []
+        for item in payload.get("papers", []):
+            pmid = str(item.get("pmid", "")).strip()
+            if not pmid:
+                continue
+            papers.append(
+                {
+                    "pmid": pmid,
+                    "title": str(item.get("title", "")),
+                    "japanese_summary": str(item.get("japanese_summary", "")),
+                    "clinical_takeaway": str(item.get("clinical_takeaway", "")),
+                    "pubmed_url": str(item.get("pubmed_url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"),
+                }
+            )
+        return papers
 
     def latest_run_date(self) -> str:
         with self.session() as conn:

@@ -23,10 +23,15 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--host", default=settings.host)
     serve_parser.add_argument("--port", type=int, default=settings.port)
-    serve_parser.add_argument("--schedule", action="store_true")
+    serve_parser.add_argument(
+        "--no-schedule",
+        action="store_true",
+        help="Disable automatic daily runs while serve is up",
+    )
 
     run_parser = sub.add_parser("run")
     run_parser.add_argument("--date", default=default_run_date())
+    run_parser.add_argument("--pmid", default="", help="Deliver a specific PubMed ID")
     run_parser.add_argument("--dry-run", action="store_true")
 
     send_parser = sub.add_parser("approve-send", help="Send an existing digest to LINE")
@@ -36,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     send_alias = sub.add_parser("send", help="Alias for approve-send")
     send_alias.add_argument("--date", required=True)
     send_alias.add_argument("--dry-run", action="store_true")
+
+    resend_image_parser = sub.add_parser("resend-image", help="Resend only the graphic for an existing run")
+    resend_image_parser.add_argument("--date", required=True)
+    resend_image_parser.add_argument("--dry-run", action="store_true")
 
     group_parser = sub.add_parser("set-line-group")
     group_parser.add_argument("--group-id", required=True)
@@ -65,15 +74,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         settings.host = args.host
         settings.port = args.port
-        serve(settings, schedule=args.schedule)
+        serve(settings, schedule=not args.no_schedule)
         return 0
     if args.command == "run":
         app = ShoulderDigestApp(settings)
-        print(json.dumps(app.run_daily(args.date, dry_run=args.dry_run), ensure_ascii=False, indent=2))
+        print(json.dumps(app.run_daily(args.date, dry_run=args.dry_run, pmid=args.pmid), ensure_ascii=False, indent=2))
         return 0
     if args.command in {"approve-send", "send"}:
         app = ShoulderDigestApp(settings)
         print(json.dumps(app.approve_send(args.date, dry_run=args.dry_run), ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "resend-image":
+        app = ShoulderDigestApp(settings)
+        print(json.dumps(app.resend_image(args.date, dry_run=args.dry_run), ensure_ascii=False, indent=2))
         return 0
     if args.command == "archive-notion":
         app = ShoulderDigestApp(settings)

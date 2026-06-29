@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_task.ps1 -Tim
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_task.ps1
 ```
 
-PCログオン時に `serve --schedule` と ngrok を自動起動する場合:
+PCログオン時に `serve`（日次スケジューラ内蔵）と ngrok を自動起動する場合:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_startup.ps1
@@ -66,7 +66,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_startup.ps1
 - `SHOULDER_DIGEST_PUBMED_LOOKBACK_DAYS` はPubMed検索の最初の登録日lookbackです。既定は90日です。
 - `SHOULDER_DIGEST_PUBMED_MAX_LOOKBACK_DAYS` は候補が見つからない場合にさらに遡る最大日数です。既定は1825日（約5年）で、90日→270日→365日→730日→1825日の順に広げて検索します。
 - 既にLINE配信済みのPMIDは重複配信しないため、過去分から未配信の論文を優先して選びます。
-- `SHOULDER_DIGEST_AUTO_SEND=1` にすると、日次ジョブ完了後にLINEへ自動送信します。既定は `0` で、Web UI または CLI から手動送信します。
+- `serve` は既定で日次スケジューラを有効にします。7:00以降にPCが起動していて、その日のジョブが未完了なら最大30秒以内に自動実行します。無効化する場合は `serve --no-schedule` を使います。
+- `SHOULDER_DIGEST_AUTO_SEND=1` にすると、日次ジョブ完了後にLINEへ自動送信します。既定は `1` です。手動送信に戻す場合は `0` にしてください。
 - 同じ日付でも `run` / `approve-send`（または `send`）は何度でも実行できます。配信済み PMID は次回の選定から除外されます。
 - LINEの `groupId` は `.env` の `LINE_GROUP_ID` に直接設定するか、`POST /webhook/line` で受け取ったグループイベントからSQLiteへ保存できます。`/setup` はどちらも認識します。
 - `NOTION_API_BASE_URL` と `LINE_API_BASE_URL` はテスト用の高度設定です。本番運用では既定の公式API URLを使います。
@@ -87,7 +88,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_windows_startup.ps1
 ## CLI
 
 ```powershell
-python -m shoulder_digest serve --schedule
+python -m shoulder_digest serve
+python -m shoulder_digest serve --no-schedule
 python -m shoulder_digest run --date 2026-06-08 --dry-run
 python -m shoulder_digest approve-send --date 2026-06-08
 python -m shoulder_digest sync-ngrok-url

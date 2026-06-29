@@ -3,7 +3,10 @@ import unittest
 from shoulder_digest.models import Paper
 from shoulder_digest.pubmed import (
     build_pubmed_search_query,
+    is_arthroplasty_paper,
     is_clinically_oriented,
+    is_digest_worthy,
+    is_foundational_shoulder_content,
     is_shoulder_focused,
     lookback_search_steps,
     parse_pubmed_xml,
@@ -86,14 +89,99 @@ class PubMedTests(unittest.TestCase):
         self.assertEqual(pubmed_date_range("2026-06-09", lookback_days=1), ("2026/06/09", "2026/06/09"))
         self.assertEqual(pubmed_date_range("2026-06-09", lookback_days=3), ("2026/06/07", "2026/06/09"))
 
-    def test_build_pubmed_search_query_prefers_clinical_human_studies(self):
+    def test_is_clinically_oriented_rejects_surgery_only_arthroplasty(self):
+        arthroplasty = Paper(
+            pmid="9",
+            title="Reverse total shoulder arthroplasty outcomes in patients",
+            abstract="Patients underwent reverse total shoulder arthroplasty with implant survivorship analysis. " * 3,
+            article_types=["Systematic Review"],
+            topics=["reverse shoulder", "arthroplasty"],
+        )
+        score_paper(arthroplasty)
+        self.assertFalse(is_clinically_oriented(arthroplasty))
+
+    def test_rehab_paper_scores_higher_than_surgery_only_arthroplasty(self):
+        rehab = Paper(
+            pmid="10",
+            title="Scapular stabilization exercise program for shoulder pain",
+            abstract=(
+                "Patients received a rehabilitation protocol with physical therapy, "
+                "range of motion exercises, and scapular dyskinesis training. " * 3
+            ),
+            article_types=["Randomized Controlled Trial"],
+        )
+        arthroplasty = Paper(
+            pmid="11",
+            title="Reverse total shoulder arthroplasty survivorship review",
+            abstract="Patients underwent reverse total shoulder arthroplasty with implant analysis. " * 3,
+            article_types=["Systematic Review"],
+        )
+        score_paper(rehab)
+        score_paper(arthroplasty)
+        self.assertGreater(rehab.relevance_score, arthroplasty.relevance_score)
+        self.assertTrue(is_clinically_oriented(rehab))
+        self.assertFalse(is_clinically_oriented(arthroplasty))
+
+    def test_select_top_papers_respects_monthly_arthroplasty_limit(self):
+        rehab = Paper(
+            pmid="20",
+            title="Shoulder rehabilitation exercise for rotator cuff pain",
+            abstract="Patients completed a physical therapy rehabilitation protocol with range of motion training. " * 3,
+            article_types=["Randomized Controlled Trial"],
+        )
+        arthroplasty = Paper(
+            pmid="21",
+            title="Postoperative rehabilitation after reverse total shoulder arthroplasty",
+            abstract=(
+                "Patients underwent reverse total shoulder arthroplasty and completed a physical therapy "
+                "rehabilitation protocol with range of motion exercises. " * 3
+            ),
+            article_types=["Systematic Review"],
+        )
+        score_paper(rehab)
+        score_paper(arthroplasty)
+        blocked = select_top_papers([arthroplasty, rehab], set(), limit=1, arthroplasty_allowed=False)
+        self.assertEqual([paper.pmid for paper in blocked], ["20"])
+        self.assertEqual(select_top_papers([arthroplasty], set(), limit=1, arthroplasty_allowed=False), [])
+        allowed = select_top_papers([arthroplasty], set(), limit=1, arthroplasty_allowed=True)
+        self.assertEqual([paper.pmid for paper in allowed], ["21"])
+
+    def test_is_arthroplasty_paper_detects_rtsa(self):
+        paper = Paper(
+            pmid="22",
+            title="Postoperative rehabilitation after reverse total shoulder arthroplasty",
+            abstract="Physical therapy began after RTSA. " * 3,
+        )
+        self.assertTrue(is_arthroplasty_paper(paper))
+
+    def test_build_pubmed_search_query_includes_rehab_terms(self):
+        query = build_pubmed_search_query()
+        self.assertIn("physiotherapy[Title/Abstract]", query)
+        self.assertIn('"physical therapy"[Title/Abstract]', query)
+        self.assertIn("kinematics[Title/Abstract]", query)
+
+    def test_build_pubmed_search_query_includes_foundational_terms(self):
         query = build_pubmed_search_query()
         self.assertIn("humans[MeSH Terms]", query)
-        self.assertIn("Randomized Controlled Trial", query)
-        self.assertIn("rehabilitation[Title/Abstract]", query)
-        self.assertIn("exoskeleton[Title/Abstract]", query)
+        self.assertIn("shoulder[Title/Abstract]", query)
+        self.assertIn("humans[MeSH Terms]", query)
         self.assertIn("hip[Title/Abstract]", query)
         self.assertIn("NOT (", query)
+
+    def test_is_foundational_shoulder_content_accepts_anatomy_review(self):
+        review = Paper(
+            pmid="41655196",
+            title="Glenohumeral stability and scapular kinematics: an anatomical review of shoulder function.",
+            abstract=(
+                "This review summarizes glenohumeral joint anatomy, rotator cuff function, "
+                "scapulothoracic kinematics, and shoulder range of motion for clinicians. " * 3
+            ),
+            article_types=["Review"],
+            topics=["shoulder"],
+        )
+        score_paper(review)
+        self.assertTrue(is_foundational_shoulder_content(review))
+        self.assertTrue(is_digest_worthy(review))
 
     def test_is_shoulder_focused_rejects_hip_instability_paper(self):
         hip = Paper(
@@ -168,7 +256,7 @@ class PubMedTests(unittest.TestCase):
             def __init__(self):
                 self.calls: list[int] = []
 
-            def search_recent(self, run_date, retmax=80, lookback_days=1):
+            def search_recent(self, run_date, retmax=80, lookback_days=1, retstart=0):
                 self.calls.append(lookback_days)
                 return ["1"] if lookback_days >= 90 else []
 

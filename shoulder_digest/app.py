@@ -13,7 +13,7 @@ from .line_client import LineClient, build_line_messages
 from .models import DigestResult
 from .notion_client import NotionClient
 from .obsidian_client import ObsidianVaultWriter
-from .ngrok_sync import rebuild_image_url, sync_public_base_url
+from .ngrok_sync import rebuild_image_url, sync_public_base_url, verify_image_url
 from .pubmed import PubMedClient, default_run_date, search_top_papers
 from .storage import Storage
 
@@ -44,19 +44,37 @@ class ShoulderDigestApp:
         )
         self.obsidian = ObsidianVaultWriter(settings.obsidian_vault, settings.obsidian_notes_dir)
 
-    def run_daily(self, run_date: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    def run_daily(
+        self,
+        run_date: str | None = None,
+        dry_run: bool = False,
+        pmid: str = "",
+    ) -> dict[str, Any]:
         run_date = run_date or default_run_date()
         public_url_sync = self._sync_public_base_url()
         self.storage.upsert_run(run_date, "running", dry_run)
         try:
-            selected, lookback_used, pmids = search_top_papers(
-                self.pubmed,
-                run_date,
-                self.storage.known_pmids(exclude_run_date=run_date),
-                limit=self.settings.top_paper_count,
-                lookback_days=self.settings.pubmed_lookback_days,
-                max_lookback_days=self.settings.pubmed_max_lookback_days,
-            )
+            if pmid:
+                if pmid in self.storage.known_pmids():
+                    self.storage.upsert_run(run_date, "delivered", dry_run)
+                    return {
+                        "runDate": run_date,
+                        "status": "already_delivered",
+                        "pmid": pmid,
+                    }
+                selected = self.pubmed.fetch_details([pmid])
+                lookback_used = 0
+                pmids = [pmid] if selected else []
+            else:
+                selected, lookback_used, pmids = search_top_papers(
+                    self.pubmed,
+                    run_date,
+                    self.storage.known_pmids(),
+                    limit=self.settings.top_paper_count,
+                    lookback_days=self.settings.pubmed_lookback_days,
+                    max_lookback_days=self.settings.pubmed_max_lookback_days,
+                    arthroplasty_deliveries_this_month=self.storage.arthroplasty_deliveries_in_month(run_date),
+                )
             self.storage.clear_run_papers(run_date)
             self.storage.save_candidates(run_date, selected)
             if not selected:
@@ -90,8 +108,10 @@ class ShoulderDigestApp:
                 "publicUrlSync": public_url_sync,
             }
             if self.settings.auto_send and not dry_run:
-                response["lineDelivery"] = self.approve_send(run_date, dry_run=False)
-                response["status"] = "delivered"
+                line_delivery = self.approve_send(run_date, dry_run=False)
+                response["lineDelivery"] = line_delivery
+                if line_delivery.get("status") != "skipped":
+                    response["status"] = "delivered"
             return response
         except Exception as exc:
             self.storage.mark_error(run_date, str(exc))
@@ -105,6 +125,14 @@ class ShoulderDigestApp:
             raise RuntimeError(
                 f"Run {run_date} is not ready to send (status={run.get('status', 'unknown')}). Run the daily job first."
             )
+        pmids = self.storage.extract_pmids_from_run(run)
+        already_delivered = self.storage.already_delivered_pmids(pmids)
+        if already_delivered and not dry_run:
+            return {
+                "status": "skipped",
+                "reason": "already_delivered",
+                "pmids": already_delivered,
+            }
         group_id = self.settings.line_group_id or self.storage.get_setting("line_group_id")
         if not group_id:
             raise RuntimeError("LINE group ID is not configured. Add the bot to a group and receive a webhook first.")
@@ -112,6 +140,14 @@ class ShoulderDigestApp:
         image_url = self._current_image_url(run)
         if not image_url and not dry_run:
             raise RuntimeError("Image URL is empty. Set SHOULDER_DIGEST_PUBLIC_BASE_URL before LINE image delivery.")
+        if image_url and not dry_run:
+            image_check = verify_image_url(image_url)
+            if not image_check.get("ok"):
+                raise RuntimeError(
+                    "Image URL is not publicly reachable for LINE: "
+                    f"{image_check.get('reason', 'unknown error')}. "
+                    "Start ngrok with scripts/start_shoulder_digest.ps1 and retry."
+                )
         messages = build_line_messages(
             run_date,
             image_url,
@@ -126,6 +162,38 @@ class ShoulderDigestApp:
             result["notionArchive"] = notion_archive
         if not dry_run and self.obsidian.configured:
             self.obsidian.mark_delivered(run_date, dry_run=False)
+        return result
+
+    def resend_image(self, run_date: str, dry_run: bool = False) -> dict[str, Any]:
+        run = self.storage.get_run(run_date)
+        if not run:
+            raise RuntimeError(f"Run not found: {run_date}")
+        if not str(run.get("image_path") or "").strip():
+            raise RuntimeError(f"Run {run_date} has no generated image.")
+        group_id = self.settings.line_group_id or self.storage.get_setting("line_group_id")
+        if not group_id:
+            raise RuntimeError("LINE group ID is not configured.")
+        public_url_sync = self._sync_public_base_url()
+        image_url = self._current_image_url(run)
+        if not image_url and not dry_run:
+            raise RuntimeError("Image URL is empty. Start ngrok and sync the public URL first.")
+        if image_url and not dry_run:
+            image_check = verify_image_url(image_url)
+            if not image_check.get("ok"):
+                raise RuntimeError(
+                    "Image URL is not publicly reachable for LINE: "
+                    f"{image_check.get('reason', 'unknown error')}"
+                )
+        messages = [
+            {
+                "type": "image",
+                "originalContentUrl": image_url,
+                "previewImageUrl": image_url,
+            }
+        ]
+        result = self.line.push(group_id, messages, dry_run=dry_run)
+        result["publicUrlSync"] = public_url_sync
+        result["imageUrl"] = image_url
         return result
 
     def handle_line_webhook(self, body: bytes, signature: str) -> dict[str, Any]:
@@ -256,6 +324,7 @@ class ShoulderDigestApp:
             paper_dict = source.to_ai_dict() if source else {"pmid": digest_paper.pmid, "title": digest_paper.title}
             paper_dict.update(
                 {
+                    "japanese_title": digest_paper.japanese_title,
                     "japanese_summary": digest_paper.japanese_summary,
                     "clinical_takeaway": digest_paper.clinical_takeaway,
                     "topics": digest_paper.topics or paper_dict.get("topics", []),

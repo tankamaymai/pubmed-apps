@@ -123,3 +123,76 @@ def rebuild_image_url(public_base_url: str, image_path: str) -> str:
     if not base or not image_path:
         return ""
     return f"{base}/generated-images/{Path(image_path).name}"
+
+
+def verify_public_base_url(
+    public_base_url: str,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    base = public_base_url.rstrip("/")
+    if not base:
+        return {"ok": False, "reason": "empty url", "url": ""}
+    health_url = f"{base}/healthz"
+    try:
+        request = urllib.request.Request(
+            health_url,
+            headers={"User-Agent": "LineBotWebhook/2.0"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", response.getcode())
+            content_type = response.headers.get("Content-Type", "")
+            if status != 200:
+                return {
+                    "ok": False,
+                    "reason": f"healthz returned HTTP {status}",
+                    "url": base,
+                }
+            if "json" not in content_type and "text" not in content_type:
+                return {
+                    "ok": False,
+                    "reason": f"healthz returned unexpected content type: {content_type}",
+                    "url": base,
+                }
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "reason": f"healthz HTTP {exc.code}", "url": base}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "reason": str(exc), "url": base}
+    return {"ok": True, "url": base}
+
+
+def verify_image_url(
+    image_url: str,
+    *,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    if not image_url:
+        return {"ok": False, "reason": "empty image url", "url": ""}
+    try:
+        request = urllib.request.Request(
+            image_url,
+            headers={"User-Agent": "LineBotWebhook/2.0"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", response.getcode())
+            content_type = response.headers.get("Content-Type", "")
+            length = int(response.headers.get("Content-Length", "0") or 0)
+            if status != 200:
+                return {"ok": False, "reason": f"image returned HTTP {status}", "url": image_url}
+            if not content_type.startswith("image/"):
+                return {
+                    "ok": False,
+                    "reason": f"image returned unexpected content type: {content_type}",
+                    "url": image_url,
+                }
+            if length and length < 1024:
+                return {
+                    "ok": False,
+                    "reason": f"image response too small ({length} bytes)",
+                    "url": image_url,
+                }
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "reason": f"image HTTP {exc.code}", "url": image_url}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "reason": str(exc), "url": image_url}
+    return {"ok": True, "url": image_url, "content_type": content_type}
